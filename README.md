@@ -1,3 +1,5 @@
+<p align="center"><img src="./assets/icon-512.png" width="128" height="128" alt="Wave AI"></p>
+
 # Wave AI for Obsidian
 
 Every recording you make in [Wave AI](https://wave.co) shows up in your Obsidian vault as a Markdown file: the summary, action items and your notes, with the full transcript folded underneath. Your Wave folders become folders in your vault.
