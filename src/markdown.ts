@@ -29,7 +29,7 @@ const FORBIDDEN = /[\\/:*?"<>|#^[\]]/g;
 export function sanitizeName(raw: string, fallback = "Untitled"): string {
 	let name = (raw ?? "")
 		.replace(FORBIDDEN, " ")
-		.replace(/[\u0000-\u001f\u007f]/g, "")
+		.replace(/\p{Cc}/gu, "")
 		.replace(/\s+/g, " ")
 		.trim()
 		.replace(/^\.+|[. ]+$/g, "");

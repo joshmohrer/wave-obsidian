@@ -125,7 +125,7 @@ export class SyncEngine {
 	}
 
 	private sleep(ms: number): Promise<void> {
-		return this.deps.sleep ? this.deps.sleep(ms) : new Promise((resolve) => setTimeout(resolve, ms));
+		return this.deps.sleep ? this.deps.sleep(ms) : new Promise((resolve) => window.setTimeout(resolve, ms));
 	}
 
 	private log(message: string): void {

@@ -7,6 +7,9 @@ import {
 	PluginSettingTab,
 	requestUrl,
 	Setting,
+	type SettingDefinition,
+	type SettingDefinitionGroup,
+	type SettingDefinitionItem,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -365,7 +368,7 @@ export default class WaveAIPlugin extends Plugin {
 				account.email ? `Connected to Wave as ${account.email}. Syncing ${account.session_count} recordings…` : "Connected to Wave.",
 				6000,
 			);
-			this.settingTab?.display();
+			this.settingTab?.refresh();
 			void this.sync("connect");
 			return true;
 		} catch (error) {
@@ -387,10 +390,13 @@ export default class WaveAIPlugin extends Plugin {
 		this.state.lastError = null;
 		await this.savePersisted();
 		this.renderStatus();
-		this.settingTab?.display();
+		this.settingTab?.refresh();
 	}
 }
 
+const SYNC_INTERVALS: Record<string, string> = { "1": "1 minute", "5": "5 minutes", "15": "15 minutes", "60": "Hour" };
+
+/** Settings on 1.13+ come from getSettingDefinitions (searchable); older apps get the same rows from display(). */
 class WaveSettingTab extends PluginSettingTab {
 	private statusEl: HTMLElement | null = null;
 
@@ -403,7 +409,175 @@ class WaveSettingTab extends PluginSettingTab {
 		this.statusEl.setText(this.plugin.statusText().replace(/^Wave: /, ""));
 	}
 
+	/** Called by Obsidian 1.13+ on first show; re-rendered through update() after connect/disconnect. */
+	refresh(): void {
+		const self = this as unknown as { update?: () => void };
+		if (typeof self.update === "function") self.update();
+		else this.display();
+	}
+
+	private stringValue(key: string): string {
+		const value = this.getControlValue(key);
+		return typeof value === "string" || typeof value === "number" ? String(value) : "";
+	}
+
+	getControlValue(key: string): unknown {
+		const settings = this.plugin.settings as unknown as Record<string, unknown>;
+		if (key === "syncIntervalMinutes") return String(settings[key]);
+		return settings[key];
+	}
+
+	async setControlValue(key: string, value: unknown): Promise<void> {
+		const settings = this.plugin.settings as unknown as Record<string, unknown>;
+		if (key === "baseFolder") settings[key] = normalizePath((typeof value === "string" ? value : "").trim() || "Wave");
+		else if (key === "syncIntervalMinutes") settings[key] = Number(value) || 5;
+		else settings[key] = value;
+		await this.plugin.savePersisted();
+		if (key === "syncIntervalMinutes") this.plugin.scheduleInterval();
+	}
+
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		const plugin = this.plugin;
+		const connected = () => Boolean(plugin.settings.token);
+		return [
+			{
+				type: "group",
+				heading: "Account",
+				items: [
+					{
+						name: "Connected to Wave",
+						desc: "Recordings sync every few minutes while Obsidian is open, and whenever you come back to it.",
+						visible: connected,
+						render: (setting) => {
+							setting.setName(plugin.settings.accountEmail ? `Connected as ${plugin.settings.accountEmail}` : "Connected to Wave");
+							setting.addButton((button) => button.setButtonText("Sync now").onClick(() => void plugin.sync("manual")));
+							setting.addButton((button) => button.setButtonText("Disconnect").onClick(() => void plugin.disconnect()));
+							this.statusEl = setting.descEl.createDiv({ cls: "wave-ai-progress" });
+							this.renderStatus();
+						},
+					},
+					{
+						name: "Connect your Wave account",
+						desc: "Opens app.wave.co in your browser. Sign in, press Connect Obsidian, and you're done.",
+						visible: () => !connected(),
+						render: (setting) => {
+							setting.addButton((button) => button.setCta().setButtonText("Connect Wave").onClick(() => plugin.startConnect()));
+						},
+					},
+					{
+						name: "Or paste an API token",
+						desc: this.tokenHelp(),
+						visible: () => !connected(),
+						render: (setting) => {
+							let pasted = "";
+							setting.addText((text) => {
+								text.inputEl.type = "password";
+								text.setPlaceholder("wave_api_…").onChange((value) => {
+									pasted = value;
+								});
+							});
+							setting.addButton((button) => button.setButtonText("Save").onClick(() => void plugin.useToken(pasted)));
+						},
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Where notes go",
+				items: [
+					{ name: "Folder", desc: "Vault folder that holds your Wave notes.", control: { type: "folder", key: "baseFolder", placeholder: "Wave" } },
+					{
+						name: "Mirror Wave folders",
+						desc: "Recordings you've put in a Wave folder land in a subfolder with the same name.",
+						control: { type: "toggle", key: "mirrorFolders" },
+					},
+					{
+						name: "File names",
+						desc: "How each note is named.",
+						control: { type: "dropdown", key: "fileNameStyle", options: { "date-title": "2026-10-28 Title", title: "Title only" } },
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "What each note contains",
+				items: [
+					{
+						name: "Transcript",
+						desc: "The full transcript sits under the summary, folded up unless you expand it.",
+						control: {
+							type: "dropdown",
+							key: "transcript",
+							options: { folded: "Included, folded", expanded: "Included, expanded", off: "Not included" },
+						},
+					},
+					{ name: "Action items", desc: "Add Wave's action items as a task list.", control: { type: "toggle", key: "includeActionItems" } },
+					{ name: "Your notes", desc: "Add the notes you typed on the recording in Wave.", control: { type: "toggle", key: "includeNotes" } },
+					{
+						name: "Apply content changes to existing notes",
+						desc: "Re-read every recording with the options above. Notes you've edited are never overwritten.",
+						render: (setting) => {
+							setting.addButton((button) =>
+								button.setButtonText("Rebuild notes").onClick(() => {
+									plugin.engine.scheduleRebuild();
+									void plugin.sync("rebuild");
+								}),
+							);
+						},
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Syncing",
+				items: [
+					{
+						name: "Recordings to sync",
+						desc: "Older recordings are skipped. New ones always sync.",
+						control: { type: "dropdown", key: "history", options: { all: "Everything", "30": "Last 30 days", "90": "Last 90 days", "365": "Last year" } },
+					},
+					{ name: "Check for new recordings every", control: { type: "dropdown", key: "syncIntervalMinutes", options: SYNC_INTERVALS } },
+					{ name: "Sync when Obsidian opens", control: { type: "toggle", key: "syncOnStartup" } },
+					{
+						name: "When a recording is deleted in Wave",
+						desc: "Notes you've edited always stay.",
+						control: { type: "dropdown", key: "onWaveDelete", options: { keep: "Keep the note", trash: "Move the note to trash" } },
+					},
+					{ name: "Help", desc: this.helpText() },
+				],
+			},
+		];
+	}
+
+	private tokenHelp(): DocumentFragment {
+		return createFragment((frag) => {
+			frag.appendText("Create one at ");
+			frag.createEl("a", { text: "app.wave.co → Settings → Developers", href: TOKENS_SETTINGS_URL });
+			frag.appendText(" with the sessions, transcripts and folders read scopes.");
+		});
+	}
+
+	private helpText(): DocumentFragment {
+		return createFragment((frag) => {
+			frag.appendText(
+				"Edit, move, rename or delete synced notes freely: Wave never writes over your changes, and nothing from your vault is sent back to Wave. ",
+			);
+			frag.createEl("a", { text: "Read the guide", href: HELP_URL });
+			frag.appendText(".");
+		});
+	}
+
 	display(): void {
+		// Obsidian 1.13+ renders getSettingDefinitions() itself (and makes them searchable).
+		if ("getControlValue" in PluginSettingTab.prototype) {
+			super.display();
+			return;
+		}
+		this.displayLegacy();
+	}
+
+	/** Same rows, built imperatively, for Obsidian 1.6.6 – 1.12. */
+	private displayLegacy(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 		const plugin = this.plugin;
@@ -416,199 +590,55 @@ class WaveSettingTab extends PluginSettingTab {
 			const row = new Setting(containerEl)
 				.setName(s.accountEmail ? `Connected as ${s.accountEmail}` : "Connected to Wave")
 				.setDesc("Recordings sync every few minutes while Obsidian is open, and whenever you come back to it.");
-			row.addButton((button) =>
-				button.setButtonText("Sync now").onClick(() => {
-					void plugin.sync("manual");
-				}),
-			);
-			row.addButton((button) =>
-				button.setButtonText("Disconnect").onClick(() => {
-					void plugin.disconnect();
-				}),
-			);
+			row.addButton((button) => button.setButtonText("Sync now").onClick(() => void plugin.sync("manual")));
+			row.addButton((button) => button.setButtonText("Disconnect").onClick(() => void plugin.disconnect()));
 			this.statusEl = containerEl.createDiv({ cls: "wave-ai-progress" });
 			this.renderStatus();
 		} else {
 			new Setting(containerEl)
 				.setName("Connect your Wave account")
-				.setDesc("Opens app.wave.co in your browser. Sign in, click Connect Obsidian, and you're done.")
-				.addButton((button) =>
-					button
-						.setCta()
-						.setButtonText("Connect Wave")
-						.onClick(() => plugin.startConnect()),
-				);
+				.setDesc("Opens app.wave.co in your browser. Sign in, press Connect Obsidian, and you're done.")
+				.addButton((button) => button.setCta().setButtonText("Connect Wave").onClick(() => plugin.startConnect()));
 
 			let pasted = "";
 			new Setting(containerEl)
 				.setName("Or paste an API token")
-				.setDesc(createFragment((frag) => {
-					frag.appendText("Create one at ");
-					frag.createEl("a", { text: "app.wave.co → Settings → Developers", href: TOKENS_SETTINGS_URL });
-					frag.appendText(" with the sessions, transcripts and folders read scopes.");
-				}))
+				.setDesc(this.tokenHelp())
 				.addText((text) => {
 					text.inputEl.type = "password";
 					text.setPlaceholder("wave_api_…").onChange((value) => {
 						pasted = value;
 					});
 				})
-				.addButton((button) =>
-					button.setButtonText("Save").onClick(() => {
-						void plugin.useToken(pasted);
-					}),
-				);
+				.addButton((button) => button.setButtonText("Save").onClick(() => void plugin.useToken(pasted)));
 		}
 
-		new Setting(containerEl).setName("Where notes go").setHeading();
-
-		new Setting(containerEl)
-			.setName("Folder")
-			.setDesc("Vault folder that holds your Wave notes.")
-			.addText((text) =>
-				text
-					.setPlaceholder("Wave")
-					.setValue(s.baseFolder)
-					.onChange(async (value) => {
-						s.baseFolder = normalizePath(value.trim() || "Wave");
-						await plugin.savePersisted();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Mirror Wave folders")
-			.setDesc("Recordings you've put in a Wave folder land in a subfolder with the same name.")
-			.addToggle((toggle) =>
-				toggle.setValue(s.mirrorFolders).onChange(async (value) => {
-					s.mirrorFolders = value;
-					await plugin.savePersisted();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("File names")
-			.setDesc("How each note is named.")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption("date-title", "2026-10-28 Title")
-					.addOption("title", "Title only")
-					.setValue(s.fileNameStyle)
-					.onChange(async (value) => {
-						s.fileNameStyle = value as WaveSettings["fileNameStyle"];
-						await plugin.savePersisted();
-					}),
-			);
-
-		new Setting(containerEl).setName("What each note contains").setHeading();
-
-		new Setting(containerEl)
-			.setName("Transcript")
-			.setDesc("The full transcript sits under the summary, folded up unless you expand it.")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption("folded", "Included, folded")
-					.addOption("expanded", "Included, expanded")
-					.addOption("off", "Not included")
-					.setValue(s.transcript)
-					.onChange(async (value) => {
-						s.transcript = value as WaveSettings["transcript"];
-						await plugin.savePersisted();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Action items")
-			.setDesc("Add Wave's action items as a task list.")
-			.addToggle((toggle) =>
-				toggle.setValue(s.includeActionItems).onChange(async (value) => {
-					s.includeActionItems = value;
-					await plugin.savePersisted();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("Your notes")
-			.setDesc("Add the notes you typed on the recording in Wave.")
-			.addToggle((toggle) =>
-				toggle.setValue(s.includeNotes).onChange(async (value) => {
-					s.includeNotes = value;
-					await plugin.savePersisted();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("Apply content changes to existing notes")
-			.setDesc("Re-read every recording with the options above. Notes you've edited are never overwritten.")
-			.addButton((button) =>
-				button.setButtonText("Rebuild notes").onClick(() => {
-					plugin.engine.scheduleRebuild();
-					void plugin.sync("rebuild");
-				}),
-			);
-
-		new Setting(containerEl).setName("Syncing").setHeading();
-
-		new Setting(containerEl)
-			.setName("Recordings to sync")
-			.setDesc("Older recordings are skipped. New ones always sync.")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption("all", "Everything")
-					.addOption("30", "Last 30 days")
-					.addOption("90", "Last 90 days")
-					.addOption("365", "Last year")
-					.setValue(s.history)
-					.onChange(async (value) => {
-						s.history = value as WaveSettings["history"];
-						await plugin.savePersisted();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Check for new recordings every")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption("1", "1 minute")
-					.addOption("5", "5 minutes")
-					.addOption("15", "15 minutes")
-					.addOption("60", "Hour")
-					.setValue(String(s.syncIntervalMinutes))
-					.onChange(async (value) => {
-						s.syncIntervalMinutes = Number(value) || 5;
-						await plugin.savePersisted();
-						plugin.scheduleInterval();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Sync when Obsidian opens")
-			.addToggle((toggle) =>
-				toggle.setValue(s.syncOnStartup).onChange(async (value) => {
-					s.syncOnStartup = value;
-					await plugin.savePersisted();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("When a recording is deleted in Wave")
-			.setDesc("Notes you've edited always stay.")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption("keep", "Keep the note")
-					.addOption("trash", "Move the note to trash")
-					.setValue(s.onWaveDelete)
-					.onChange(async (value) => {
-						s.onWaveDelete = value as WaveSettings["onWaveDelete"];
-						await plugin.savePersisted();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Help")
-			.setDesc(createFragment((frag) => {
-				frag.appendText("Edit, move, rename or delete synced notes freely: Wave never writes over your changes, and nothing from your vault is sent back to Wave. ");
-				frag.createEl("a", { text: "Read the guide", href: HELP_URL });
-				frag.appendText(".");
-			}));
+		const groups = this.getSettingDefinitions().slice(1) as SettingDefinitionGroup[];
+		for (const group of groups) {
+			new Setting(containerEl).setName(group.heading ?? "").setHeading();
+			for (const item of group.items ?? []) {
+				const def = item as SettingDefinition;
+				const setting = new Setting(containerEl).setName(def.name);
+				if (def.desc) setting.setDesc(def.desc);
+				if ("render" in def && def.render) {
+					def.render(setting, undefined as unknown as Parameters<typeof def.render>[1]);
+					continue;
+				}
+				if (!("control" in def) || !def.control) continue;
+				const control = def.control;
+				const key = control.key;
+				if (control.type === "toggle") {
+					setting.addToggle((toggle) => toggle.setValue(Boolean(this.getControlValue(key))).onChange((v) => void this.setControlValue(key, v)));
+				} else if (control.type === "dropdown") {
+					setting.addDropdown((dropdown) =>
+						dropdown.addOptions(control.options).setValue(this.stringValue(key)).onChange((v) => void this.setControlValue(key, v)),
+					);
+				} else if (control.type === "folder") {
+					setting.addText((text) =>
+						text.setPlaceholder(control.placeholder ?? "").setValue(this.stringValue(key)).onChange((v) => void this.setControlValue(key, v)),
+					);
+				}
+			}
+		}
 	}
 }
