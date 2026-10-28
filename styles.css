@@ -1,0 +1,18 @@
+/* Wave AI for Obsidian */
+.wave-ai-status {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+.wave-ai-account {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.wave-ai-account-email {
+	font-weight: var(--font-semibold);
+}
+.wave-ai-progress {
+	margin-top: 6px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
