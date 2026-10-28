@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WaveClient, type HttpResponse, type HttpTransport } from "../src/api";
 import { DEFAULT_SETTINGS, DEFAULT_STATE, type SyncState, type WaveSettings } from "../src/settings";
-import { SyncEngine, type VaultIO } from "../src/sync";
+import { SyncEngine, waveIdOf, type VaultIO } from "../src/sync";
 import { hashText, normaliseForHash } from "../src/markdown";
 import type { SessionDetail, SessionListItem, Transcript, WaveFolder } from "../src/types";
 
@@ -319,6 +319,46 @@ test("unchanged content is not rewritten", async () => {
 	const result = await h.engine.run("rebuild");
 	assert.equal(result?.unchanged, 3);
 	assert.equal(result?.updated, 0);
+});
+
+test("a note that reappears with its wave_id is adopted, not duplicated", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	// Renamed in Finder: Obsidian sees a delete and a create.
+	const from = "Wave/2026-10-03 Session 2.md";
+	const to = "Wave/Session two (mine).md";
+	const content = h.vault.files.get(from) ?? "";
+	h.vault.files.delete(from);
+	h.engine.noteDeleted(from, false);
+	assert.equal(h.state.deleted.s2, true);
+	h.vault.files.set(to, content);
+	assert.equal(h.engine.adoptIfWaveNote(to, content), true);
+	assert.equal(h.state.deleted.s2, undefined);
+	assert.equal(h.state.notes.s2.path, to);
+	h.wave.sessions[1].title = "Session 2 renamed";
+	const result = await h.engine.run("interval");
+	assert.equal(result?.updated, 1);
+	assert.equal(result?.created, 0);
+	assert.match(h.vault.files.get(to) ?? "", /Session 2 renamed/);
+	assert.equal(h.vault.files.size, 3);
+});
+
+test("a note another device already wrote at the target path is adopted", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	// Fresh plugin state (new device), same vault contents.
+	const h2 = harness();
+	h2.vault.files = new Map(h.vault.files);
+	h2.vault.folders = new Set(h.vault.folders);
+	const result = await h2.engine.run("manual");
+	assert.equal(result?.created, 0);
+	assert.equal(h2.vault.files.size, 3);
+	assert.equal(Object.keys(h2.state.notes).length, 3);
+});
+
+test("waveIdOf reads only the frontmatter", () => {
+	assert.equal(waveIdOf('---\ntitle: "x"\nwave_id: "abc-1"\n---\nbody wave_id: "zzz"\n'), "abc-1");
+	assert.equal(waveIdOf("no frontmatter wave_id: \"zzz\""), null);
 });
 
 test("an invalid token stops the pass with an unauthorized error", async () => {

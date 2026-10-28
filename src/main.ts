@@ -310,6 +310,15 @@ export default class WaveAIPlugin extends Plugin {
 			}),
 		);
 		this.registerEvent(
+			this.app.vault.on("create", (file: TAbstractFile) => {
+				if (!(file instanceof TFile) || file.extension !== "md") return;
+				if (this.engine.sessionIdForPath(file.path)) return;
+				void this.app.vault.cachedRead(file).then((content) => {
+					if (content.includes("wave_id:") && this.engine.adoptIfWaveNote(file.path, content)) void this.savePersisted();
+				});
+			}),
+		);
+		this.registerEvent(
 			this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
 				if (this.engine.noteRenamed(oldPath, file.path, file instanceof TFolder)) void this.savePersisted();
 			}),

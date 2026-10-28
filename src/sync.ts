@@ -75,6 +75,15 @@ export function historyCutoff(history: WaveSettings["history"], now: number): st
 	return new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+/** The wave_id property of a note the plugin (on any device) wrote, or null. */
+export function waveIdOf(content: string): string | null {
+	if (!content.startsWith("---")) return null;
+	const end = content.indexOf("\n---", 3);
+	if (end === -1) return null;
+	const match = content.slice(0, end).match(/^wave_id:\s*"?([^"\n]+?)"?\s*$/m);
+	return match ? match[1].trim() : null;
+}
+
 function sameMeta(record: NoteRecord, item: SessionListItem): boolean {
 	return (
 		record.title === item.title &&
@@ -193,6 +202,30 @@ export class SyncEngine {
 			}
 		}
 		return changed;
+	}
+
+	/**
+	 * A file appeared in the vault (Obsidian Sync, iCloud, a rename done in Finder…). If it carries a
+	 * wave_id the plugin doesn't track, adopt it instead of creating a duplicate later.
+	 */
+	adoptIfWaveNote(path: string, content: string, opts: { managed: boolean } = { managed: false }): boolean {
+		const id = waveIdOf(content);
+		if (!id) return false;
+		const existing = this.state.notes[id];
+		if (existing && existing.path === path) return false;
+		if (existing && existing.path !== path) return false; // a copy; leave both alone
+		this.state.notes[id] = {
+			path,
+			// A file the user placed is never moved by the plugin; one found where the plugin would put it is.
+			managedPath: opts.managed ? path : "",
+			hash: hashText(normaliseForHash(content)),
+			title: "",
+			timestamp: null,
+			durationSeconds: -1,
+			syncedAt: 0,
+		};
+		delete this.state.deleted[id];
+		return true;
 	}
 
 	/** Session id for a vault path, if the plugin wrote it. */
@@ -400,7 +433,7 @@ export class SyncEngine {
 	private async processSession(item: SessionListItem, opts: { cheap: boolean }): Promise<Outcome> {
 		const id = item.id;
 		if (this.state.deleted[id]) return "skipped";
-		const tracked = this.state.notes[id];
+		let tracked = this.state.notes[id];
 
 		if (tracked && opts.cheap && sameMeta(tracked, item)) {
 			if (!(await this.deps.io.exists(tracked.path))) {
@@ -441,6 +474,12 @@ export class SyncEngine {
 		const hash = hashText(normaliseForHash(content));
 		const target = this.targetPath(detail, folder);
 		const syncedAt = this.now();
+
+		if (!tracked && (await this.deps.io.exists(target))) {
+			// Another device's plugin may already have written this note here.
+			const existing = await this.deps.io.read(target);
+			if (waveIdOf(existing) === id && this.adoptIfWaveNote(target, existing, { managed: true })) tracked = this.state.notes[id];
+		}
 
 		if (tracked) {
 			if (!(await this.deps.io.exists(tracked.path))) {
