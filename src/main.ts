@@ -494,7 +494,7 @@ class WaveSettingTab extends PluginSettingTab {
 					{
 						name: "File names",
 						desc: "How each note is named.",
-						control: { type: "dropdown", key: "fileNameStyle", options: { "date-title": "2026-10-28 Title", title: "Title only" } },
+						control: { type: "dropdown", key: "fileNameStyle", options: { title: "Title only", "date-title": "2026-10-28 Title" } },
 					},
 				],
 			},

@@ -30,7 +30,7 @@ export const DEFAULT_SETTINGS: WaveSettings = {
 	apiBaseUrl: "https://api.wave.co",
 	baseFolder: "Wave",
 	mirrorFolders: true,
-	fileNameStyle: "date-title",
+	fileNameStyle: "title",
 	transcript: "folded",
 	includeActionItems: true,
 	includeNotes: true,

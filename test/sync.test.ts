@@ -133,7 +133,7 @@ function harness(opts: { sessions?: SessionDetail[]; settings?: Partial<WaveSett
 		bulk: opts.bulk ?? true,
 	};
 	for (const s of wave.sessions) wave.transcripts[s.id] = { id: s.id, transcript: `Alex: hello from ${s.id}` };
-	const settings: WaveSettings = { ...DEFAULT_SETTINGS, token: "wave_api_test", ...(opts.settings ?? {}) };
+	const settings: WaveSettings = { ...DEFAULT_SETTINGS, token: "wave_api_test", fileNameStyle: "date-title", ...(opts.settings ?? {}) };
 	const state: SyncState = { ...DEFAULT_STATE, notes: {}, deleted: {}, ...(opts.state ?? {}) };
 	const vault = new MemoryVault();
 	let saves = 0;
@@ -340,10 +340,29 @@ test("backfill resumes across passes when aborted", async () => {
 	assert.equal(h.state.backfillDone, true);
 });
 
-test("colliding titles get a short id suffix instead of overwriting", async () => {
+test("colliding titles get the date, then a counter, instead of overwriting", async () => {
+	const h = harness({
+		settings: { fileNameStyle: "title" },
+		sessions: [
+			makeSession(1, { timestamp: "2026-10-05T10:00:00.000Z", title: "Standup" }),
+			makeSession(2, { timestamp: "2026-10-05T18:00:00.000Z", title: "Standup" }),
+			makeSession(3, { timestamp: "2026-10-12T10:00:00.000Z", title: "Standup" }),
+		],
+	});
+	await h.engine.run("manual");
+	// newest first: s3 takes the plain name, the others get their date (two on the same day → counter)
+	assert.deepEqual([...h.vault.files.keys()].sort(), ["Wave/Standup (2026-10-05 2).md", "Wave/Standup (2026-10-05).md", "Wave/Standup.md"]);
+	assert.equal(h.state.notes.s3.path, "Wave/Standup.md");
+});
+
+test("the default file name is the title alone", () => {
+	assert.equal(DEFAULT_SETTINGS.fileNameStyle, "title");
+});
+
+test("with dated names a same-day collision gets a counter", async () => {
 	const h = harness({ sessions: [makeSession(1, { timestamp: "2026-10-05T10:00:00.000Z", title: "Standup" }), makeSession(2, { timestamp: "2026-10-05T18:00:00.000Z", title: "Standup" })] });
 	await h.engine.run("manual");
-	assert.deepEqual([...h.vault.files.keys()].sort(), ["Wave/2026-10-05 Standup (s1).md", "Wave/2026-10-05 Standup.md"]);
+	assert.deepEqual([...h.vault.files.keys()].sort(), ["Wave/2026-10-05 Standup (2).md", "Wave/2026-10-05 Standup.md"]);
 });
 
 test("unchanged content is not rewritten", async () => {

@@ -1,5 +1,5 @@
 import { WaveApiError, WaveClient } from "./api";
-import { buildNote, hashText, normaliseForHash, noteBaseName, pickFolder, sanitizeName } from "./markdown";
+import { buildNote, hashText, localDate, normaliseForHash, noteBaseName, pickFolder, sanitizeName } from "./markdown";
 import type { NoteRecord, SyncState, WaveSettings } from "./settings";
 import type { BulkSession, SessionDetail, SessionListItem, Transcript, WaveFolder } from "./types";
 
@@ -590,7 +590,7 @@ export class SyncEngine {
 			const userEdited = hashText(normaliseForHash(current)) !== tracked.hash;
 
 			if (tracked.path === tracked.managedPath && target !== tracked.path) {
-				const dest = await this.uniquePath(target, id);
+				const dest = await this.uniquePath(target, id, detail.timestamp);
 				await this.deps.io.ensureFolder(parentOf(dest));
 				await this.deps.io.rename(tracked.path, dest);
 				tracked.path = dest;
@@ -616,7 +616,7 @@ export class SyncEngine {
 			return "updated";
 		}
 
-		const dest = await this.uniquePath(target, id);
+		const dest = await this.uniquePath(target, id, detail.timestamp);
 		await this.deps.io.ensureFolder(parentOf(dest));
 		await this.deps.io.create(dest, content);
 		this.state.notes[id] = {
@@ -638,20 +638,29 @@ export class SyncEngine {
 		return joinPath(base, sub, `${noteBaseName(session, this.settings.fileNameStyle)}.md`);
 	}
 
-	private async uniquePath(target: string, id: string): Promise<string> {
-		if (!(await this.deps.io.exists(target))) return target;
-		const owner = this.sessionIdForPath(target);
-		if (owner === id) return target;
+	/**
+	 * A path nobody else owns. Two recordings with the same title get the date added
+	 * ("Weekly Standup (2026-10-13).md"); a third on the same day gets a counter.
+	 */
+	private async uniquePath(target: string, id: string, timestamp: string | null = null): Promise<string> {
+		const free = async (path: string) => !(await this.deps.io.exists(path)) || this.sessionIdForPath(path) === id;
+		if (await free(target)) return target;
 		const stem = target.replace(/\.md$/, "");
-		const short = id.replace(/[^A-Za-z0-9]/g, "").slice(-6) || "wave";
-		let candidate = `${stem} (${short}).md`;
-		let n = 2;
-		while ((await this.deps.io.exists(candidate)) && this.sessionIdForPath(candidate) !== id) {
-			candidate = `${stem} (${short}-${n}).md`;
-			n += 1;
-			if (n > 50) break;
+		const date = localDate(timestamp);
+		if (date && !stem.includes(date)) {
+			const dated = `${stem} (${date}).md`;
+			if (await free(dated)) return dated;
+			for (let n = 2; n <= 50; n++) {
+				const candidate = `${stem} (${date} ${n}).md`;
+				if (await free(candidate)) return candidate;
+			}
 		}
-		return candidate;
+		for (let n = 2; n <= 50; n++) {
+			const candidate = `${stem} (${n}).md`;
+			if (await free(candidate)) return candidate;
+		}
+		const short = id.replace(/[^A-Za-z0-9]/g, "").slice(-6) || "wave";
+		return `${stem} (${short}).md`;
 	}
 
 	private markDeleted(id: string): void {

@@ -62,7 +62,7 @@ Prefer not to use the browser flow? Create an API token at [app.wave.co → Sett
 |---|---|---|
 | Folder | `Wave` | Vault folder that holds your Wave notes |
 | Mirror Wave folders | on | Subfolders named after your Wave folders |
-| File names | `2026-10-28 Title` | Or title only |
+| File names | Title | Or `2026-10-28 Title`. Two recordings with the same title get the date added |
 | Transcript | folded | Folded, expanded, or left out |
 | Action items / Your notes | on | Include them in the note |
 | Recordings to sync | everything | Or the last 30 / 90 / 365 days |
