@@ -28,6 +28,7 @@ const FORBIDDEN = /[\\/:*?"<>|#^[\]]/g;
 /** A file or folder name Obsidian accepts on every platform. */
 export function sanitizeName(raw: string, fallback = "Untitled"): string {
 	let name = (raw ?? "")
+		.replace(/:/g, "\u2236")
 		.replace(FORBIDDEN, " ")
 		.replace(/\p{Cc}/gu, "")
 		.replace(/\s+/g, " ")
@@ -145,6 +146,15 @@ export interface BuildNoteInput {
 	appUrl?: string;
 }
 
+/** Wave summaries often open with a heading that repeats the title; the note already has it as its file name. */
+function stripTitleHeading(summary: string, title: string | undefined | null): string {
+	const m = /^#{1,6}[ \t]+(.+?)[ \t#]*(?:\n|$)/.exec(summary);
+	if (!m || !title) return summary;
+	const norm = (s: string) => s.replace(/[*_`]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+	if (norm(m[1]) !== norm(title)) return summary;
+	return summary.slice(m[0].length).trim();
+}
+
 /** The full Markdown file for one recording: properties on top, summary, action items, notes, transcript. */
 export function buildNote(input: BuildNoteInput): string {
 	const { session, transcript, folderName, settings } = input;
@@ -173,7 +183,7 @@ export function buildNote(input: BuildNoteInput): string {
 
 	const blocks: string[] = [fm.join("\n")];
 
-	const summary = (session.summary ?? "").replace(/\r\n/g, "\n").trim();
+	const summary = stripTitleHeading((session.summary ?? "").replace(/\r\n/g, "\n").trim(), session.title);
 	if (summary) blocks.push(summary);
 	else blocks.push("_No summary yet._");
 

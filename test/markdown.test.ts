@@ -26,7 +26,14 @@ const session: SessionDetail = {
 const settings = { transcript: "folded" as const, includeActionItems: true, includeNotes: true };
 
 test("sanitizeName strips characters Obsidian rejects", () => {
-	assert.equal(sanitizeName('A: "B" / C | D? #tag [x] ^y'), "A B C D tag x y");
+	assert.equal(sanitizeName('A: "B" / C | D? #tag [x] ^y'), "A\u2236 B C D tag x y");
+	assert.equal(sanitizeName("1:1 — Maya"), "1\u22361 — Maya");
+});
+
+test("buildNote drops a leading summary heading that repeats the title", () => {
+	const note = buildNote({ session: { ...session, title: "Product Sync", summary: "## Product Sync\n\nLocked the scope." }, folderName: null, settings, transcript: null });
+	assert.match(note, /\n---\n\nLocked the scope\.\n/);
+	assert.doesNotMatch(note, /## Product Sync/);
 	assert.equal(sanitizeName("   "), "Untitled");
 	assert.equal(sanitizeName("..hidden.."), "hidden");
 	assert.equal(sanitizeName("x".repeat(300)).length, 120);
@@ -34,8 +41,8 @@ test("sanitizeName strips characters Obsidian rejects", () => {
 
 test("noteBaseName prefixes the local date", () => {
 	const name = noteBaseName(session, "date-title");
-	assert.match(name, /^\d{4}-\d{2}-\d{2} Q4 Roadmap Review Plan$/);
-	assert.equal(noteBaseName(session, "title"), "Q4 Roadmap Review Plan");
+	assert.match(name, /^\d{4}-\d{2}-\d{2} Q4 Roadmap\u2236 Review Plan$/);
+	assert.equal(noteBaseName(session, "title"), "Q4 Roadmap\u2236 Review Plan");
 	assert.equal(noteBaseName({ title: "No date", timestamp: null }, "date-title"), "No date");
 });
 
