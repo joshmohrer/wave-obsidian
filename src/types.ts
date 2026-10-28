@@ -65,6 +65,17 @@ export interface SessionListResponse {
 	has_more: boolean;
 }
 
+/** One row of POST /v1/sessions/bulk with include_summary, include_details, include_transcript and include_segments. */
+export interface BulkSession extends SessionDetail {
+	transcript?: string | null;
+	segments?: Segment[];
+}
+
+export interface BulkResponse {
+	sessions: BulkSession[];
+	errors: Array<{ id: string; error: string }>;
+}
+
 export interface Account {
 	user_id: string;
 	email?: string;

@@ -1,5 +1,6 @@
 import type {
 	Account,
+	BulkResponse,
 	SessionDetail,
 	SessionListResponse,
 	Transcript,
@@ -149,6 +150,17 @@ export class WaveClient {
 
 	getTranscript(id: string): Promise<Transcript> {
 		return this.request<Transcript>("GET", `/v1/sessions/${encodeURIComponent(id)}/transcript`);
+	}
+
+	/** Up to 50 full recordings in one request. */
+	bulkSessions(ids: string[], opts: { transcript: boolean }): Promise<BulkResponse> {
+		return this.request<BulkResponse>("POST", "/v1/sessions/bulk", undefined, {
+			session_ids: ids,
+			include_summary: true,
+			include_details: true,
+			include_transcript: opts.transcript,
+			include_segments: opts.transcript,
+		});
 	}
 
 	async listFolders(): Promise<WaveFolder[]> {

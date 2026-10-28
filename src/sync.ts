@@ -1,7 +1,7 @@
 import { WaveApiError, WaveClient } from "./api";
 import { buildNote, hashText, normaliseForHash, noteBaseName, pickFolder, sanitizeName } from "./markdown";
 import type { NoteRecord, SyncState, WaveSettings } from "./settings";
-import type { SessionDetail, SessionListItem, Transcript, WaveFolder } from "./types";
+import type { BulkSession, SessionDetail, SessionListItem, Transcript, WaveFolder } from "./types";
 
 /** What the engine needs from the vault. Implemented over Obsidian's Vault in main.ts and in-memory in tests. */
 export interface VaultIO {
@@ -51,6 +51,7 @@ type Outcome = "created" | "updated" | "unchanged" | "kept-edit" | "skipped" | "
 
 const PAGE = 100;
 const BACKFILL_PAGE = 50;
+const BULK_MAX = 50;
 const DEEP_REFRESH_EVERY_MS = 60 * 60 * 1000;
 const DEEP_REFRESH_COUNT = 10;
 const RATE_FLOOR = 3;
@@ -275,9 +276,8 @@ export class SyncEngine {
 		// Oldest first so an interrupted pass leaves newestSeen honest.
 		items.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
 		const firstRun = !this.state.newestSeen;
-		let done = 0;
+		const pending: SessionListItem[] = [];
 		for (const item of items) {
-			if (this.abortRequested) return;
 			const tracked = this.state.notes[item.id];
 			if (firstRun && !tracked) {
 				// The backfill phase will create these in newest-first order.
@@ -287,11 +287,20 @@ export class SyncEngine {
 				if (!(await this.deps.io.exists(tracked.path))) this.markDeleted(item.id);
 				continue;
 			}
-			await this.processItem(item, { cheap: false });
-			done += 1;
-			this.progress("recent", done, items.length);
-			if (item.timestamp && (!this.state.newestSeen || item.timestamp > this.state.newestSeen)) {
-				this.state.newestSeen = item.timestamp;
+			if (this.state.deleted[item.id]) continue;
+			pending.push(item);
+		}
+		let done = 0;
+		for (let i = 0; i < pending.length; i += BULK_MAX) {
+			if (this.abortRequested) return;
+			const chunk = pending.slice(i, i + BULK_MAX);
+			await this.processBatch(chunk);
+			done += chunk.length;
+			this.progress("recent", done, pending.length);
+			for (const item of chunk) {
+				if (item.timestamp && (!this.state.newestSeen || item.timestamp > this.state.newestSeen)) {
+					this.state.newestSeen = item.timestamp;
+				}
 			}
 		}
 		if (items.length) {
@@ -348,15 +357,35 @@ export class SyncEngine {
 				this.finishBackfill();
 				return;
 			}
+			const batch: SessionListItem[] = [];
+			let reachedCutoff = false;
 			for (const item of page.sessions) {
-				if (this.abortRequested) return;
 				if (cutoff && item.timestamp && item.timestamp < cutoff) {
-					this.finishBackfill();
-					return;
+					reachedCutoff = true;
+					break;
 				}
-				const outcome = await this.processItem(item, { cheap });
-				if (outcome !== "skipped") walked += 1;
-				this.progress("backfill", walked, total);
+				if (this.state.deleted[item.id]) continue;
+				const tracked = this.state.notes[item.id];
+				if (tracked && cheap && sameMeta(tracked, item)) {
+					if (!(await this.deps.io.exists(tracked.path))) {
+						this.markDeleted(item.id);
+						this.result.removed += 1;
+					} else {
+						this.result.unchanged += 1;
+						walked += 1;
+					}
+					continue;
+				}
+				batch.push(item);
+			}
+			if (this.abortRequested) return;
+			const outcomes = await this.processBatch(batch);
+			walked += outcomes.filter((o) => o !== "skipped").length;
+			this.progress("backfill", walked, total);
+			if (this.abortRequested) return;
+			if (reachedCutoff) {
+				this.finishBackfill();
+				return;
 			}
 			this.state.backfillCursor = page.next_cursor;
 			await this.deps.save();
@@ -371,6 +400,8 @@ export class SyncEngine {
 		this.state.backfillDone = true;
 		this.state.backfillCursor = null;
 		this.state.rebuildPending = false;
+		// Everything was just read in full; the hourly re-check can wait.
+		this.state.lastDeepRefreshAt = this.now();
 	}
 
 	/** Once an hour, re-read the newest few recordings in full to catch summary, tag and folder edits. */
@@ -382,23 +413,85 @@ export class SyncEngine {
 			.filter(([, r]) => r.timestamp)
 			.sort((a, b) => (b[1].timestamp ?? "").localeCompare(a[1].timestamp ?? ""))
 			.slice(0, DEEP_REFRESH_COUNT);
-		let done = 0;
-		for (const [id, record] of recent) {
-			if (this.abortRequested) return;
-			await this.processItem(
-				{ id, title: record.title, timestamp: record.timestamp, duration_seconds: record.durationSeconds, type: "", platform: null },
-				{ cheap: false },
-			);
-			done += 1;
-			this.progress("refresh", done, recent.length);
-		}
+		if (this.abortRequested) return;
+		this.progress("refresh", 0, recent.length);
+		await this.processBatch(
+			recent.map(([id, record]) => ({
+				id,
+				title: record.title,
+				timestamp: record.timestamp,
+				duration_seconds: record.durationSeconds,
+				type: "",
+				platform: null,
+			})),
+		);
+		this.progress("refresh", recent.length, recent.length);
 		this.state.lastDeepRefreshAt = this.now();
 		await this.deps.save();
 	}
 
 	// --- One recording -----------------------------------------------------------------------------
 
-	private async processItem(item: SessionListItem, opts: { cheap: boolean }): Promise<Outcome> {
+	/**
+	 * Read up to 50 recordings in one bulk request and write their notes. Falls back to one
+	 * request per recording if the server doesn't support the bulk fields yet.
+	 */
+	private async processBatch(items: SessionListItem[]): Promise<Outcome[]> {
+		if (!items.length) return [];
+		if (this.abortRequested) return items.map((): Outcome => "skipped");
+		const wantTranscript = this.settings.transcript !== "off";
+		let rows: BulkSession[] | null = null;
+		if (items.length > 1 || this.bulkSupported) {
+			await this.throttle();
+			try {
+				const res = await this.withRetry(() =>
+					this.deps.client.bulkSessions(items.map((i) => i.id), { transcript: wantTranscript }),
+				);
+				rows = res.sessions ?? [];
+				this.bulkSupported = true;
+			} catch (error) {
+				if (error instanceof WaveApiError && (error.code === "unauthorized" || error.code === "forbidden" || error.code === "rate_limited")) throw error;
+				this.log(`bulk read failed, falling back to single reads: ${error instanceof Error ? error.message : String(error)}`);
+				rows = null;
+			}
+		}
+		const outcomes: Outcome[] = [];
+		if (rows && rows.length && "tags" in rows[0]) {
+			const byId = new Map(rows.map((r) => [r.id, r]));
+			for (const item of items) {
+				if (this.abortRequested) {
+					outcomes.push("skipped");
+					continue;
+				}
+				const row = byId.get(item.id);
+				if (!row) {
+					outcomes.push("skipped");
+					continue;
+				}
+				const transcript: Transcript | null =
+					wantTranscript && (row.segments?.length || row.transcript)
+						? { id: row.id, transcript: row.transcript ?? "", segments: row.segments }
+						: null;
+				outcomes.push(await this.processItem(item, { cheap: false, preloaded: { detail: row, transcript } }));
+			}
+			return outcomes;
+		}
+		for (const item of items) {
+			if (this.abortRequested) {
+				outcomes.push("skipped");
+				continue;
+			}
+			outcomes.push(await this.processItem(item, { cheap: false }));
+		}
+		return outcomes;
+	}
+
+	private bulkSupported = false;
+
+	private async processItem(
+		item: SessionListItem,
+		opts: { cheap: boolean; preloaded?: { detail: SessionDetail; transcript: Transcript | null } },
+	): Promise<Outcome> {
 		try {
 			const outcome = await this.processSession(item, opts);
 			switch (outcome) {
@@ -430,7 +523,10 @@ export class SyncEngine {
 		}
 	}
 
-	private async processSession(item: SessionListItem, opts: { cheap: boolean }): Promise<Outcome> {
+	private async processSession(
+		item: SessionListItem,
+		opts: { cheap: boolean; preloaded?: { detail: SessionDetail; transcript: Transcript | null } },
+	): Promise<Outcome> {
 		const id = item.id;
 		if (this.state.deleted[id]) return "skipped";
 		let tracked = this.state.notes[id];
@@ -443,26 +539,30 @@ export class SyncEngine {
 			return "unchanged";
 		}
 
-		await this.throttle();
 		let detail: SessionDetail;
-		try {
-			detail = await this.withRetry(() => this.deps.client.getSession(id));
-		} catch (error) {
-			if (error instanceof WaveApiError && error.code === "not_found") return "skipped";
-			throw error;
+		let transcript: Transcript | null = null;
+		if (opts.preloaded) {
+			detail = opts.preloaded.detail;
+			transcript = opts.preloaded.transcript;
+		} else {
+			await this.throttle();
+			try {
+				detail = await this.withRetry(() => this.deps.client.getSession(id));
+			} catch (error) {
+				if (error instanceof WaveApiError && error.code === "not_found") return "skipped";
+				throw error;
+			}
+			if (this.settings.transcript !== "off") {
+				await this.throttle();
+				try {
+					transcript = await this.withRetry(() => this.deps.client.getTranscript(id));
+				} catch (error) {
+					if (!(error instanceof WaveApiError && error.code === "not_found")) throw error;
+				}
+			}
 		}
 		if (detail.processing_status && detail.processing_status !== "completed") return "skipped";
 		if (detail.phone?.ongoing) return "skipped";
-
-		let transcript: Transcript | null = null;
-		if (this.settings.transcript !== "off") {
-			await this.throttle();
-			try {
-				transcript = await this.withRetry(() => this.deps.client.getTranscript(id));
-			} catch (error) {
-				if (!(error instanceof WaveApiError && error.code === "not_found")) throw error;
-			}
-		}
 
 		const folder = this.settings.mirrorFolders ? pickFolder(detail.folder_ids, this.folderCache) : null;
 		const content = buildNote({

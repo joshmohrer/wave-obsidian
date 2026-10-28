@@ -47,6 +47,7 @@ interface FakeWave {
 	folders: WaveFolder[];
 	requests: string[];
 	rateRemaining: number;
+	bulk: boolean;
 }
 
 function fakeTransport(wave: FakeWave): HttpTransport {
@@ -70,6 +71,22 @@ function fakeTransport(wave: FakeWave): HttpTransport {
 			const hasMore = filtered.length > limit;
 			const items: SessionListItem[] = page.map(({ id, title, timestamp, duration_seconds, type, platform }) => ({ id, title, timestamp, duration_seconds, type, platform }));
 			return json(200, { sessions: items, next_cursor: hasMore ? page[page.length - 1].timestamp : null, has_more: hasMore });
+		}
+		if (url.pathname === "/v1/sessions/bulk" && req.method === "POST") {
+			if (!wave.bulk) return json(500, { error: { code: "internal_error", message: "no bulk here" } });
+			const body = JSON.parse(req.body ?? "{}") as { session_ids: string[]; include_transcript?: boolean; include_segments?: boolean };
+			const rows = [];
+			const errors = [];
+			for (const id of body.session_ids) {
+				const s = wave.sessions.find((x) => x.id === id);
+				if (!s) {
+					errors.push({ id, error: "not_found" });
+					continue;
+				}
+				const t = wave.transcripts[id];
+				rows.push({ ...s, transcript: body.include_transcript ? t?.transcript ?? null : undefined, segments: body.include_segments ? t?.segments : undefined });
+			}
+			return json(200, { sessions: rows, errors });
 		}
 		const m = url.pathname.match(/^\/v1\/sessions\/([^/]+)(\/transcript)?$/);
 		if (m) {
@@ -106,13 +123,14 @@ function makeSession(n: number, extra: Partial<SessionDetail> = {}): SessionDeta
 	};
 }
 
-function harness(opts: { sessions?: SessionDetail[]; settings?: Partial<WaveSettings>; state?: Partial<SyncState>; folders?: WaveFolder[] } = {}) {
+function harness(opts: { sessions?: SessionDetail[]; settings?: Partial<WaveSettings>; state?: Partial<SyncState>; folders?: WaveFolder[]; bulk?: boolean } = {}) {
 	const wave: FakeWave = {
 		sessions: opts.sessions ?? [makeSession(1), makeSession(2), makeSession(3)],
 		transcripts: {},
 		folders: opts.folders ?? [],
 		requests: [],
 		rateRemaining: 50,
+		bulk: opts.bulk ?? true,
 	};
 	for (const s of wave.sessions) wave.transcripts[s.id] = { id: s.id, transcript: `Alex: hello from ${s.id}` };
 	const settings: WaveSettings = { ...DEFAULT_SETTINGS, token: "wave_api_test", ...(opts.settings ?? {}) };
@@ -144,6 +162,25 @@ test("first sync creates one note per recording, newest first, and remembers the
 	assert.match(h.vault.files.get("Wave/2026-10-04 Session 3.md") ?? "", /Summary 3/);
 	assert.match(h.vault.files.get("Wave/2026-10-04 Session 3.md") ?? "", /hello from s3/);
 	assert.equal(Object.keys(h.state.notes).length, 3);
+});
+
+test("first sync reads a whole page of recordings in one bulk request", async () => {
+	const h = harness({ sessions: Array.from({ length: 7 }, (_, i) => makeSession(i + 1)) });
+	await h.engine.run("manual");
+	assert.equal(h.vault.files.size, 7);
+	const bulk = h.wave.requests.filter((r) => r.startsWith("POST /v1/sessions/bulk"));
+	const single = h.wave.requests.filter((r) => /^GET \/v1\/sessions\/s\d/.test(r));
+	assert.equal(bulk.length, 1);
+	assert.equal(single.length, 0);
+	assert.match(h.vault.files.get("Wave/2026-10-08 Session 7.md") ?? "", /hello from s7/);
+});
+
+test("without bulk support the engine falls back to one request per recording", async () => {
+	const h = harness({ bulk: false });
+	const result = await h.engine.run("manual");
+	assert.equal(result?.created, 3);
+	assert.equal(h.wave.requests.filter((r) => r === "GET /v1/sessions/s1").length, 1);
+	assert.match(h.vault.files.get("Wave/2026-10-02 Session 1.md") ?? "", /hello from s1/);
 });
 
 test("second sync is cheap and changes nothing", async () => {
