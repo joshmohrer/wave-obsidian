@@ -3,7 +3,7 @@ import process from "process";
 import builtins from "builtin-modules";
 
 const banner = `/*
-Wave AI for Obsidian. Source: https://github.com/mohrer-associates/wave-obsidian
+Wave AI for Obsidian. Source: https://github.com/joshmohrer/wave-obsidian
 */
 `;
 
