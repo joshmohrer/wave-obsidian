@@ -1,7 +1,7 @@
 {
 	"id": "wave-ai",
 	"name": "Wave AI",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"minAppVersion": "1.5.0",
 	"description": "Sync your Wave AI recordings into your vault as Markdown: summaries, action items and transcripts, with your Wave folders mirrored as vault folders.",
 	"author": "Wave AI",

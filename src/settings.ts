@@ -81,6 +81,6 @@ export const DEFAULT_STATE: SyncState = {
 export const WAVE_APP_URL = "https://app.wave.co";
 export const AUTHORIZE_URL = `${WAVE_APP_URL}/obsidian/authorize`;
 export const TOKENS_SETTINGS_URL = `${WAVE_APP_URL}/settings/developers`;
-export const HELP_URL = "https://help.wave.co/en/collections/wave-for-obsidian";
+export const HELP_URL = "https://help.wave.co/integrations/connect-wave-to-obsidian";
 /** obsidian://wave-connect?token=…&state=… */
 export const PROTOCOL_ACTION = "wave-connect";
