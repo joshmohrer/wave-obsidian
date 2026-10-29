@@ -47,7 +47,7 @@ export interface SyncResult {
 	aborted: boolean;
 }
 
-type Outcome = "created" | "updated" | "unchanged" | "kept-edit" | "skipped" | "gone";
+type Outcome = "created" | "updated" | "unchanged" | "kept-edit" | "skipped";
 
 const PAGE = 100;
 const BACKFILL_PAGE = 50;
@@ -168,11 +168,15 @@ export class SyncEngine {
 		return this.result;
 	}
 
-	/** Forget sync position (not the notes) so the next pass re-walks all history and rewrites unedited notes. */
+	/**
+	 * Forget sync position (not the notes) so the next pass re-walks all history, rewrites unedited
+	 * notes and brings back notes that were removed from the vault.
+	 */
 	scheduleRebuild(): void {
 		this.state.backfillDone = false;
 		this.state.backfillCursor = null;
 		this.state.rebuildPending = true;
+		this.state.deleted = {};
 	}
 
 	// --- Vault hooks -------------------------------------------------------------------------------
@@ -276,18 +280,20 @@ export class SyncEngine {
 		// Oldest first so an interrupted pass leaves newestSeen honest.
 		items.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
 		const firstRun = !this.state.newestSeen;
+		const cutoff = historyCutoff(this.settings.history, this.now());
 		const pending: SessionListItem[] = [];
 		for (const item of items) {
+			if (this.state.deleted[item.id]) continue;
 			const tracked = this.state.notes[item.id];
 			if (firstRun && !tracked) {
 				// The backfill phase will create these in newest-first order.
 				continue;
 			}
+			if (!tracked && cutoff && item.timestamp && item.timestamp < cutoff) continue;
 			if (tracked && sameMeta(tracked, item)) {
-				if (!(await this.deps.io.exists(tracked.path))) this.markDeleted(item.id);
-				continue;
+				if (await this.deps.io.exists(tracked.path)) continue;
+				this.forgetMissing(item.id);
 			}
-			if (this.state.deleted[item.id]) continue;
 			pending.push(item);
 		}
 		let done = 0;
@@ -367,14 +373,12 @@ export class SyncEngine {
 				if (this.state.deleted[item.id]) continue;
 				const tracked = this.state.notes[item.id];
 				if (tracked && cheap && sameMeta(tracked, item)) {
-					if (!(await this.deps.io.exists(tracked.path))) {
-						this.markDeleted(item.id);
-						this.result.removed += 1;
-					} else {
+					if (await this.deps.io.exists(tracked.path)) {
 						this.result.unchanged += 1;
 						walked += 1;
+						continue;
 					}
-					continue;
+					this.forgetMissing(item.id);
 				}
 				batch.push(item);
 			}
@@ -507,9 +511,6 @@ export class SyncEngine {
 				case "kept-edit":
 					this.result.keptEdits += 1;
 					break;
-				case "gone":
-					this.result.removed += 1;
-					break;
 				default:
 					break;
 			}
@@ -529,14 +530,12 @@ export class SyncEngine {
 	): Promise<Outcome> {
 		const id = item.id;
 		if (this.state.deleted[id]) return "skipped";
-		let tracked = this.state.notes[id];
+		let tracked: NoteRecord | undefined = this.state.notes[id];
 
 		if (tracked && opts.cheap && sameMeta(tracked, item)) {
-			if (!(await this.deps.io.exists(tracked.path))) {
-				this.markDeleted(id);
-				return "gone";
-			}
-			return "unchanged";
+			if (await this.deps.io.exists(tracked.path)) return "unchanged";
+			this.forgetMissing(id);
+			tracked = undefined;
 		}
 
 		let detail: SessionDetail;
@@ -581,11 +580,12 @@ export class SyncEngine {
 			if (waveIdOf(existing) === id && this.adoptIfWaveNote(target, existing, { managed: true })) tracked = this.state.notes[id];
 		}
 
+		if (tracked && !(await this.deps.io.exists(tracked.path))) {
+			this.forgetMissing(id);
+			tracked = undefined;
+		}
+
 		if (tracked) {
-			if (!(await this.deps.io.exists(tracked.path))) {
-				this.markDeleted(id);
-				return "gone";
-			}
 			const current = await this.deps.io.read(tracked.path);
 			const userEdited = hashText(normaliseForHash(current)) !== tracked.hash;
 
@@ -663,9 +663,14 @@ export class SyncEngine {
 		return `${stem} (${short}).md`;
 	}
 
-	private markDeleted(id: string): void {
+	/**
+	 * A tracked note is not where the plugin left it and no delete event was seen (another device's
+	 * sync hasn't delivered it yet, a move done outside Obsidian, a restored vault…). Forget the record
+	 * so the note is written again; only a delete inside Obsidian makes a note stay gone.
+	 */
+	private forgetMissing(id: string): void {
+		this.log(`note for ${id} is missing from the vault; it will be written again`);
 		delete this.state.notes[id];
-		this.state.deleted[id] = true;
 	}
 
 	/** A tracked recording is gone from the list. Confirm with Wave before acting on it. */

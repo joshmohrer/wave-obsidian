@@ -1,8 +1,10 @@
 import {
 	addIcon,
+	apiVersion,
 	App,
 	normalizePath,
 	Notice,
+	Platform,
 	Plugin,
 	PluginSettingTab,
 	requestUrl,
@@ -135,6 +137,8 @@ export default class WaveAIPlugin extends Plugin {
 	engine!: SyncEngine;
 	private statusBar: HTMLElement | null = null;
 	private progress: SyncProgress = { phase: "idle", done: 0, total: null };
+	/** Recent engine log lines, for the diagnostics copy. */
+	private logLines: string[] = [];
 	private settingTab: WaveSettingTab | null = null;
 	private intervalId: number | null = null;
 	private lastSyncStartedAt = 0;
@@ -157,7 +161,7 @@ export default class WaveAIPlugin extends Plugin {
 				this.renderStatus();
 				this.settingTab?.renderStatus();
 			},
-			log: (message) => console.debug(`[Wave AI] ${message}`),
+			log: (message) => this.logLine(message),
 		});
 
 		this.addRibbonIcon(ICON_ID, "Sync Wave recordings", () => {
@@ -189,9 +193,14 @@ export default class WaveAIPlugin extends Plugin {
 			name: "Rebuild notes from Wave",
 			callback: () => {
 				this.engine.scheduleRebuild();
-				new Notice("Wave will re-read every recording on the next sync. Notes you edited are left alone.");
+				new Notice("Wave will re-read every recording and bring back notes you removed. Notes you edited are left alone.");
 				void this.sync("rebuild");
 			},
+		});
+		this.addCommand({
+			id: "copy-diagnostics",
+			name: "Copy diagnostics for Wave support",
+			callback: () => void this.copyDiagnostics(),
 		});
 
 		this.settingTab = new WaveSettingTab(this.app, this);
@@ -286,6 +295,43 @@ export default class WaveAIPlugin extends Plugin {
 	renderStatus(): void {
 		if (!this.statusBar) return;
 		this.statusBar.setText(this.statusText());
+	}
+
+	private logLine(message: string): void {
+		console.debug(`[Wave AI] ${message}`);
+		this.logLines.push(`${new Date().toISOString()} ${message}`);
+		if (this.logLines.length > 200) this.logLines.splice(0, this.logLines.length - 200);
+	}
+
+	/** Everything support needs to see what the plugin did, with nothing secret in it. */
+	diagnosticsText(): string {
+		const s = this.settings;
+		const st = this.state;
+		const notes = Object.values(st.notes);
+		const newest = notes.reduce<string | null>((acc, n) => (n.timestamp && (!acc || n.timestamp > acc) ? n.timestamp : acc), null);
+		const iso = (ms: number | null) => (ms ? new Date(ms).toISOString() : "never");
+		const lines = [
+			`Wave AI for Obsidian ${this.manifest.version} · Obsidian ${apiVersion} · ${Platform.isMobile ? "mobile" : "desktop"} · ${new Date().toISOString()}`,
+			`account: ${s.accountEmail || "(not connected)"} · token: ${s.token ? "present" : "none"}`,
+			`settings: folder=${s.baseFolder} mirrorFolders=${s.mirrorFolders} names=${s.fileNameStyle} transcript=${s.transcript} history=${s.history} every=${s.syncIntervalMinutes}m onStartup=${s.syncOnStartup} onWaveDelete=${s.onWaveDelete}`,
+			`state: tracked=${notes.length} removed=${Object.keys(st.deleted).length} newestNote=${newest ?? "none"} newestSeen=${st.newestSeen ?? "none"} backfillDone=${st.backfillDone} cursor=${st.backfillCursor ?? "none"} rebuildPending=${st.rebuildPending}`,
+			`last sync: ${iso(st.lastSyncAt)} · last error: ${st.lastError ?? "none"} · deep refresh: ${iso(st.lastDeepRefreshAt)} · phase now: ${this.progress.phase}`,
+			"",
+			"recent log:",
+			...this.logLines.slice(-80),
+		];
+		return lines.join("\n");
+	}
+
+	async copyDiagnostics(): Promise<void> {
+		const text = this.diagnosticsText();
+		try {
+			await navigator.clipboard.writeText(text);
+			new Notice("Wave diagnostics copied. Paste them into your message to Wave support.", 6000);
+		} catch {
+			console.info(text);
+			new Notice("Couldn't reach the clipboard. The diagnostics are in the developer console instead.", 8000);
+		}
 	}
 
 	statusText(): string {
@@ -515,7 +561,7 @@ class WaveSettingTab extends PluginSettingTab {
 					{ name: "Your notes", desc: "Add the notes you typed on the recording in Wave.", control: { type: "toggle", key: "includeNotes" } },
 					{
 						name: "Apply content changes to existing notes",
-						desc: "Re-read every recording with the options above. Notes you've edited are never overwritten.",
+						desc: "Re-read every recording with the options above and bring back notes you removed. Notes you've edited are never overwritten.",
 						render: (setting) => {
 							setting.addButton((button) =>
 								button.setButtonText("Rebuild notes").onClick(() => {
@@ -544,6 +590,13 @@ class WaveSettingTab extends PluginSettingTab {
 						control: { type: "dropdown", key: "onWaveDelete", options: { keep: "Keep the note", trash: "Move the note to trash" } },
 					},
 					{ name: "Help", desc: this.helpText() },
+					{
+						name: "Something off?",
+						desc: "Copies what the plugin has been doing (no token, no note contents) so Wave support can see it.",
+						render: (setting) => {
+							setting.addButton((button) => button.setButtonText("Copy diagnostics").onClick(() => void plugin.copyDiagnostics()));
+						},
+					},
 				],
 			},
 		];

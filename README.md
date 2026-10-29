@@ -51,10 +51,11 @@ Prefer not to use the browser flow? Create an API token at [app.wave.co → Sett
 ## How syncing works
 
 - It checks for new recordings every 5 minutes while Obsidian is open, whenever you come back to it, and whenever you press the Wave icon in the ribbon (or run **Sync now** from the command palette).
-- **Your edits win.** Edit, move, rename or delete a synced note and Wave leaves it alone. A note you've changed is never written over, and a note you've deleted is never recreated.
+- **Your edits win.** Edit, move, rename or delete a synced note and Wave leaves it alone. A note you've changed is never written over, and a note you've deleted inside Obsidian is never recreated. (A note that simply goes missing, say a vault restored from backup or another device that hasn't caught up yet, is written again.)
 - **One way only.** The plugin reads from Wave. Nothing in your vault is sent back.
 - **Your history, your choice.** Sync everything, or only the last 30, 90 or 365 days. Big libraries sync in the background at Wave's API rate; the status bar shows progress.
 - Changed the content options (transcript, action items, notes)? Press **Rebuild notes** to apply them to existing notes. Edited notes still stay as they are.
+- Missing something? **Rebuild notes** also brings back notes you removed, and **Copy diagnostics** (Settings → Wave AI, or the command palette) copies a short, token-free report you can send to support@wave.co.
 
 ## Settings
 

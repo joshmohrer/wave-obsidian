@@ -232,9 +232,10 @@ test("a note the user deleted stays deleted", async () => {
 	assert.equal(h.state.deleted.s2, true);
 	await h.engine.run("interval");
 	assert.ok(!h.vault.files.has(path));
-	h.engine.scheduleRebuild();
-	await h.engine.run("rebuild");
+	h.wave.sessions[1].title = "Session 2 renamed";
+	await h.engine.run("interval");
 	assert.ok(!h.vault.files.has(path));
+	assert.ok(!h.vault.files.has("Wave/2026-10-03 Session 2 renamed.md"));
 });
 
 test("a note the user moved is updated in place and never moved back", async () => {
@@ -421,4 +422,54 @@ test("an invalid token stops the pass with an unauthorized error", async () => {
 	const h = harness();
 	h.settings.token = "";
 	assert.equal(await h.engine.run("manual"), null);
+});
+
+test("a tracked note whose file vanished without a delete event is written again", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	h.vault.files.delete(path); // gone from disk, but Obsidian never reported a delete (other device, Finder, restore…)
+	const result = await h.engine.run("interval");
+	assert.equal(result?.created, 1);
+	assert.ok(h.vault.files.has(path));
+	assert.equal(h.state.deleted.s2, undefined);
+	assert.equal(h.state.notes.s2?.path, path);
+});
+
+test("a missing note is also written again when its recording changed in Wave", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	h.vault.files.delete(path);
+	h.wave.sessions[1].title = "Session 2 renamed";
+	const result = await h.engine.run("interval");
+	assert.equal(result?.created, 1);
+	assert.ok(h.vault.files.has("Wave/2026-10-03 Session 2 renamed.md"));
+	assert.equal(h.state.deleted.s2, undefined);
+});
+
+test("rebuild brings back notes the user removed", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	h.vault.files.delete(path);
+	h.engine.noteDeleted(path, false);
+	await h.engine.run("interval");
+	assert.ok(!h.vault.files.has(path));
+	h.engine.scheduleRebuild();
+	await h.engine.run("rebuild");
+	assert.ok(h.vault.files.has(path));
+	assert.deepEqual(h.state.deleted, {});
+});
+
+test("history range also keeps old recordings off the newest page after the first sync", async () => {
+	const sessions = [makeSession(1, { timestamp: "2025-01-01T00:00:00.000Z" }), makeSession(2, { timestamp: "2026-10-20T00:00:00.000Z" })];
+	const h = harness({ sessions, settings: { history: "30" } });
+	await h.engine.run("manual");
+	const result = await h.engine.run("interval");
+	assert.equal(result?.created, 0);
+	assert.equal(Object.keys(h.state.notes).length, 1);
+	h.wave.sessions.push(makeSession(3, { timestamp: "2026-10-27T00:00:00.000Z" }));
+	const next = await h.engine.run("interval");
+	assert.equal(next?.created, 1);
 });
