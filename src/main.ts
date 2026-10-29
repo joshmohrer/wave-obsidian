@@ -2,6 +2,7 @@ import {
 	addIcon,
 	apiVersion,
 	App,
+	Modal,
 	normalizePath,
 	Notice,
 	Platform,
@@ -298,7 +299,6 @@ export default class WaveAIPlugin extends Plugin {
 	}
 
 	private logLine(message: string): void {
-		console.debug(`[Wave AI] ${message}`);
 		this.logLines.push(`${new Date().toISOString()} ${message}`);
 		if (this.logLines.length > 200) this.logLines.splice(0, this.logLines.length - 200);
 	}
@@ -329,8 +329,7 @@ export default class WaveAIPlugin extends Plugin {
 			await navigator.clipboard.writeText(text);
 			new Notice("Wave diagnostics copied. Paste them into your message to Wave support.", 6000);
 		} catch {
-			console.info(text);
-			new Notice("Couldn't reach the clipboard. The diagnostics are in the developer console instead.", 8000);
+			new DiagnosticsModal(this.app, text).open();
 		}
 	}
 
@@ -443,6 +442,26 @@ export default class WaveAIPlugin extends Plugin {
 const SYNC_INTERVALS: Record<string, string> = { "1": "1 minute", "5": "5 minutes", "15": "15 minutes", "60": "Hour" };
 
 /** Settings on 1.13+ come from getSettingDefinitions (searchable); older apps get the same rows from display(). */
+/** Shown only when the clipboard can't be used: the report as selectable text. */
+class DiagnosticsModal extends Modal {
+	constructor(app: App, private readonly text: string) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.setTitle("Wave diagnostics");
+		const area = this.contentEl.createEl("textarea", { text: this.text });
+		area.readOnly = true;
+		area.rows = 16;
+		area.style.width = "100%";
+		area.select();
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
 class WaveSettingTab extends PluginSettingTab {
 	private statusEl: HTMLElement | null = null;
 
