@@ -57,6 +57,8 @@ export interface SyncState {
 	notes: Record<string, NoteRecord>;
 	/** Sessions the user removed from the vault. Never recreated. */
 	deleted: Record<string, true>;
+	/** Notes that went missing: what the plugin last wrote (content hash), until the note is written or adopted again. */
+	forgotten: Record<string, string>;
 	/** Newest session timestamp seen; new recordings are fetched with `since`. */
 	newestSeen: string | null;
 	backfillCursor: string | null;
@@ -71,6 +73,7 @@ export interface SyncState {
 export const DEFAULT_STATE: SyncState = {
 	notes: {},
 	deleted: {},
+	forgotten: {},
 	newestSeen: null,
 	backfillCursor: null,
 	backfillDone: false,

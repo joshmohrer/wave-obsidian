@@ -137,7 +137,7 @@ function harness(opts: { sessions?: SessionDetail[]; settings?: Partial<WaveSett
 	};
 	for (const s of wave.sessions) wave.transcripts[s.id] = { id: s.id, transcript: `Alex: hello from ${s.id}` };
 	const settings: WaveSettings = { ...DEFAULT_SETTINGS, token: "wave_api_test", fileNameStyle: "date-title", ...(opts.settings ?? {}) };
-	const state: SyncState = { ...DEFAULT_STATE, notes: {}, deleted: {}, ...(opts.state ?? {}) };
+	const state: SyncState = { ...DEFAULT_STATE, notes: {}, deleted: {}, forgotten: {}, ...(opts.state ?? {}) };
 	const vault = new MemoryVault();
 	let saves = 0;
 	const client = new WaveClient(() => settings.token, fakeTransport(wave));
@@ -498,4 +498,160 @@ test("a note written by an older version gets the recording time on its next ful
 	const recorded = Date.parse(h.wave.sessions[1].timestamp ?? "");
 	assert.deepEqual(h.vault.times.get(path), { ctime: recorded, mtime: recorded });
 	assert.equal(h.state.notes.s2?.stamped, true);
+});
+
+test("an edited note that reappears while the pass is reading keeps its edits", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	const original = h.vault.files.get(path) ?? "";
+	h.vault.files.delete(path);
+	const edited = original.replace("Summary 2", "Summary 2 with my notes");
+	const plainExists = h.vault.exists.bind(h.vault);
+	let missed = false;
+	h.vault.exists = async (p: string) => {
+		const result = await plainExists(p);
+		if (p === path && !result && !missed) {
+			missed = true; // first look: gone; it comes back edited before the engine writes
+			h.vault.files.set(path, edited);
+			return false;
+		}
+		return result;
+	};
+	const result = await h.engine.run("interval");
+	assert.equal(h.vault.files.get(path), edited);
+	assert.equal(result?.keptEdits, 1);
+	assert.equal(result?.created, 0);
+	assert.equal(h.state.notes.s2?.path, path);
+});
+
+test("a note deleted in Obsidian while the pass is reading is not written again", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	const plainExists = h.vault.exists.bind(h.vault);
+	let done = false;
+	h.vault.exists = async (p: string) => {
+		if (p === path && !done) {
+			done = true; // the user deletes the note inside Obsidian mid-pass
+			h.vault.files.delete(path);
+			h.engine.noteDeleted(path, false);
+			return false;
+		}
+		return plainExists(p);
+	};
+	h.wave.sessions[1].title = "Session 2 renamed";
+	const result = await h.engine.run("interval");
+	assert.equal(result?.created, 0);
+	assert.ok(!h.vault.files.has(path));
+	assert.ok(!h.vault.files.has("Wave/2026-10-03 Session 2 renamed.md"));
+	assert.equal(h.state.deleted.s2, true);
+	assert.equal(h.state.notes.s2, undefined);
+});
+
+test("a missing note already written at its new name by another device is adopted, not duplicated", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const oldPath = "Wave/2026-10-03 Session 2.md";
+	const newPath = "Wave/2026-10-03 Session 2 renamed.md";
+	const content = h.vault.files.get(oldPath) ?? "";
+	h.vault.files.delete(oldPath);
+	h.vault.files.set(newPath, content);
+	h.wave.sessions[1].title = "Session 2 renamed";
+	const result = await h.engine.run("interval");
+	assert.equal(result?.created, 0);
+	assert.deepEqual([...h.vault.files.keys()].filter((p) => p.includes("Session 2")), [newPath]);
+	assert.equal(h.state.notes.s2?.path, newPath);
+});
+
+test("stamping older notes writes each file once, never again", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	for (const record of Object.values(h.state.notes)) delete record.stamped;
+	let writes = 0;
+	const plainModify = h.vault.modify.bind(h.vault);
+	h.vault.modify = async (p: string, c: string, times?: { ctime?: number; mtime?: number }) => {
+		writes += 1;
+		return plainModify(p, c, times);
+	};
+	h.engine.scheduleRebuild();
+	await h.engine.run("rebuild");
+	assert.equal(writes, 3);
+	h.engine.scheduleRebuild();
+	await h.engine.run("rebuild");
+	await h.engine.run("interval");
+	assert.equal(writes, 3);
+});
+
+test("an edited note adopted through a vault event after going missing keeps its edits", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	const original = h.vault.files.get(path) ?? "";
+	h.vault.files.delete(path);
+	await h.engine.run("interval"); // nothing comes back yet: the engine wrote it again...
+	assert.ok(h.vault.files.has(path));
+	// ...but suppose that write had failed: simulate a missing note whose baseline is only remembered
+	h.vault.files.delete(path);
+	delete h.state.notes.s2;
+	h.state.forgotten.s2 = hashText(normaliseForHash(original));
+	const edited = original.replace("Summary 2", "Summary 2 with my notes");
+	h.vault.files.set("Personal/Edited note.md", edited);
+	assert.equal(h.engine.adoptIfWaveNote("Personal/Edited note.md", edited), true); // Obsidian's create event
+	assert.equal(h.state.forgotten.s2, undefined);
+	const result = await h.engine.run("interval");
+	assert.equal(result?.keptEdits, 1);
+	assert.equal(h.vault.files.get("Personal/Edited note.md"), edited);
+	assert.equal(result?.created, 0);
+});
+
+test("a note adopted by a vault event while the pass is fetching is not created a second time", async () => {
+	const h = harness({ bulk: false });
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	const content = h.vault.files.get(path) ?? "";
+	h.vault.files.delete(path);
+	let looks = 0;
+	const plainExists = h.vault.exists.bind(h.vault);
+	h.vault.exists = async (p: string) => {
+		if (p === path && ++looks === 2) {
+			// The note is already forgotten and being fetched; the user drops a copy elsewhere and Obsidian reports it.
+			h.vault.files.set("Personal/Copy.md", content);
+			assert.equal(h.engine.adoptIfWaveNote("Personal/Copy.md", content), true);
+		}
+		return plainExists(p);
+	};
+	const result = await h.engine.run("interval");
+	assert.equal(result?.created, 0);
+	assert.deepEqual([...h.vault.files.keys()].filter((p) => p.includes("Session 2") || p.includes("Copy")), ["Personal/Copy.md"]);
+	assert.equal(h.state.notes.s2?.path, "Personal/Copy.md");
+});
+
+test("the baseline of a missing note survives a failed pass", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	const original = h.vault.files.get(path) ?? "";
+	h.vault.files.delete(path);
+	const plainExists = h.vault.exists.bind(h.vault);
+	let failed = false;
+	h.vault.exists = async (p: string) => {
+		if (p === path && !failed) {
+			failed = true;
+			h.wave.bulk = false;
+			h.settings.token = ""; // the fetch that follows fails
+			return false;
+		}
+		return plainExists(p);
+	};
+	await h.engine.run("interval").catch(() => undefined);
+	assert.equal(typeof h.state.forgotten.s2, "string");
+	h.settings.token = "wave_api_test";
+	h.wave.bulk = true;
+	h.vault.exists = plainExists;
+	const edited = original.replace("Summary 2", "Summary 2 with my notes");
+	h.vault.files.set(path, edited);
+	const result = await h.engine.run("interval");
+	assert.equal(result?.keptEdits, 1);
+	assert.equal(h.vault.files.get(path), edited);
 });

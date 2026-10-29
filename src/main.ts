@@ -133,7 +133,7 @@ class ObsidianVaultIO implements VaultIO {
 
 export default class WaveAIPlugin extends Plugin {
 	settings: WaveSettings = { ...DEFAULT_SETTINGS };
-	state: SyncState = { ...DEFAULT_STATE, notes: {}, deleted: {} };
+	state: SyncState = { ...DEFAULT_STATE, notes: {}, deleted: {}, forgotten: {} };
 	client!: WaveClient;
 	engine!: SyncEngine;
 	private statusBar: HTMLElement | null = null;
@@ -233,9 +233,10 @@ export default class WaveAIPlugin extends Plugin {
 	private async loadPersisted(): Promise<void> {
 		const raw = ((await this.loadData()) ?? {}) as Partial<PersistedData>;
 		this.settings = { ...DEFAULT_SETTINGS, ...(raw.settings ?? {}) };
-		this.state = { ...DEFAULT_STATE, notes: {}, deleted: {}, ...(raw.state ?? {}) };
+		this.state = { ...DEFAULT_STATE, notes: {}, deleted: {}, forgotten: {}, ...(raw.state ?? {}) };
 		if (!this.state.notes) this.state.notes = {};
 		if (!this.state.deleted) this.state.deleted = {};
+		if (!this.state.forgotten) this.state.forgotten = {};
 	}
 
 	async savePersisted(): Promise<void> {
@@ -320,7 +321,7 @@ export default class WaveAIPlugin extends Plugin {
 			"recent log:",
 			...this.logLines.slice(-80),
 		];
-		return lines.join("\n");
+		return lines.join("\n").replace(/wave_(api|mcp)_[A-Za-z0-9_-]+/g, "wave_$1_…");
 	}
 
 	async copyDiagnostics(): Promise<void> {
@@ -450,10 +451,9 @@ class DiagnosticsModal extends Modal {
 
 	onOpen(): void {
 		this.setTitle("Wave diagnostics");
-		const area = this.contentEl.createEl("textarea", { text: this.text });
+		const area = this.contentEl.createEl("textarea", { text: this.text, cls: "wave-ai-diagnostics" });
 		area.readOnly = true;
 		area.rows = 16;
-		area.style.width = "100%";
 		area.select();
 	}
 
@@ -611,7 +611,7 @@ class WaveSettingTab extends PluginSettingTab {
 					{ name: "Help", desc: this.helpText() },
 					{
 						name: "Something off?",
-						desc: "Copies what the plugin has been doing (no token, no note contents) so Wave support can see it.",
+						desc: "Copies what the plugin has been doing so Wave support can see it: versions, settings, your account email, folder names and recent sync messages. No token, no note contents.",
 						render: (setting) => {
 							setting.addButton((button) => button.setButtonText("Copy diagnostics").onClick(() => void plugin.copyDiagnostics()));
 						},

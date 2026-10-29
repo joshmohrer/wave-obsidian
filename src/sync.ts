@@ -193,6 +193,7 @@ export class SyncEngine {
 		for (const [id, record] of Object.entries(this.state.notes)) {
 			if (record.path === path || (isFolder && record.path.startsWith(`${path}/`))) {
 				delete this.state.notes[id];
+				delete this.state.forgotten[id];
 				this.state.deleted[id] = true;
 				changed = true;
 			}
@@ -235,6 +236,12 @@ export class SyncEngine {
 			durationSeconds: -1,
 			syncedAt: 0,
 		};
+		// A note that went missing and came back: judge edits against what the plugin last wrote.
+		const lastWritten = this.state.forgotten[id];
+		if (lastWritten !== undefined) {
+			this.state.notes[id].hash = lastWritten;
+			delete this.state.forgotten[id];
+		}
 		delete this.state.deleted[id];
 		return true;
 	}
@@ -298,7 +305,7 @@ export class SyncEngine {
 			if (!tracked && cutoff && item.timestamp && item.timestamp < cutoff) continue;
 			if (tracked && sameMeta(tracked, item)) {
 				if (await this.deps.io.exists(tracked.path)) continue;
-				this.forgetMissing(item.id);
+				if (!this.forgetMissing(item.id, tracked)) continue;
 			}
 			pending.push(item);
 		}
@@ -379,12 +386,11 @@ export class SyncEngine {
 				if (this.state.deleted[item.id]) continue;
 				const tracked = this.state.notes[item.id];
 				if (tracked && cheap && sameMeta(tracked, item)) {
-					if (await this.deps.io.exists(tracked.path)) {
+					if ((await this.deps.io.exists(tracked.path)) || !this.forgetMissing(item.id, tracked)) {
 						this.result.unchanged += 1;
 						walked += 1;
 						continue;
 					}
-					this.forgetMissing(item.id);
 				}
 				batch.push(item);
 			}
@@ -540,7 +546,7 @@ export class SyncEngine {
 
 		if (tracked && opts.cheap && sameMeta(tracked, item)) {
 			if (await this.deps.io.exists(tracked.path)) return "unchanged";
-			this.forgetMissing(id);
+			if (!this.forgetMissing(id, tracked)) return "unchanged";
 			tracked = undefined;
 		}
 
@@ -567,6 +573,7 @@ export class SyncEngine {
 			}
 		}
 		if (detail.processing_status && detail.processing_status !== "completed") return "skipped";
+		tracked = this.state.notes[id]; // a vault event may have adopted or removed the note during the fetch
 		if (detail.phone?.ongoing) return "skipped";
 
 		const folder = this.settings.mirrorFolders ? pickFolder(detail.folder_ids, this.folderCache) : null;
@@ -582,20 +589,24 @@ export class SyncEngine {
 		const recordedAt = detail.timestamp ? Date.parse(detail.timestamp) : NaN;
 		const times: WriteTimes = Number.isFinite(recordedAt) ? { ctime: recordedAt, mtime: recordedAt } : {};
 
+		if (tracked && !(await this.deps.io.exists(tracked.path))) {
+			if (this.state.deleted[id]) return "skipped"; // removed in Obsidian while this pass was reading
+			tracked = this.forgetMissing(id, tracked) ? undefined : this.state.notes[id];
+		}
+
 		if (!tracked && (await this.deps.io.exists(target))) {
-			// Another device's plugin may already have written this note here.
+			// Another device's plugin may already have written this note here, or the missing note is back.
 			const existing = await this.deps.io.read(target);
 			if (waveIdOf(existing) === id && this.adoptIfWaveNote(target, existing, { managed: true })) tracked = this.state.notes[id];
 		}
 
-		if (tracked && !(await this.deps.io.exists(tracked.path))) {
-			this.forgetMissing(id);
-			tracked = undefined;
-		}
+		if (this.state.deleted[id]) return "skipped";
 
 		if (tracked) {
 			const current = await this.deps.io.read(tracked.path);
-			const userEdited = hashText(normaliseForHash(current)) !== tracked.hash;
+			const currentHash = hashText(normaliseForHash(current));
+			// Not an edit if the file already holds exactly what Wave would write now (another device wrote it).
+			const userEdited = currentHash !== tracked.hash && currentHash !== hash;
 
 			if (tracked.path === tracked.managedPath && target !== tracked.path) {
 				const dest = await this.uniquePath(target, id, detail.timestamp);
@@ -632,7 +643,10 @@ export class SyncEngine {
 
 		const dest = await this.uniquePath(target, id, detail.timestamp);
 		await this.deps.io.ensureFolder(parentOf(dest));
+		if (this.state.deleted[id]) return "skipped";
+		if (this.state.notes[id]) return "skipped"; // adopted by a vault event meanwhile; the next pass refreshes it
 		await this.deps.io.create(dest, content, times);
+		delete this.state.forgotten[id];
 		this.state.notes[id] = {
 			path: dest,
 			managedPath: dest,
@@ -683,9 +697,13 @@ export class SyncEngine {
 	 * sync hasn't delivered it yet, a move done outside Obsidian, a restored vault…). Forget the record
 	 * so the note is written again; only a delete inside Obsidian makes a note stay gone.
 	 */
-	private forgetMissing(id: string): void {
+	private forgetMissing(id: string, record: NoteRecord): boolean {
+		// A vault event may have adopted the note elsewhere while the file check was running.
+		if (this.state.notes[id] !== record) return false;
 		this.log(`note for ${id} is missing from the vault; it will be written again`);
+		this.state.forgotten[id] = record.hash;
 		delete this.state.notes[id];
+		return true;
 	}
 
 	/** A tracked recording is gone from the list. Confirm with Wave before acting on it. */
@@ -707,6 +725,7 @@ export class SyncEngine {
 			}
 		}
 		delete this.state.notes[id];
+		delete this.state.forgotten[id];
 		this.log(`session ${id} removed in Wave`);
 	}
 
