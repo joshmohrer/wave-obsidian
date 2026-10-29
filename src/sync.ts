@@ -4,11 +4,17 @@ import type { NoteRecord, SyncState, WaveSettings } from "./settings";
 import type { BulkSession, SessionDetail, SessionListItem, Transcript, WaveFolder } from "./types";
 
 /** What the engine needs from the vault. Implemented over Obsidian's Vault in main.ts and in-memory in tests. */
+/** File times to stamp on a write, so the vault sorts notes by recording time. */
+export interface WriteTimes {
+	ctime?: number;
+	mtime?: number;
+}
+
 export interface VaultIO {
 	exists(path: string): Promise<boolean>;
 	read(path: string): Promise<string>;
-	create(path: string, content: string): Promise<void>;
-	modify(path: string, content: string): Promise<void>;
+	create(path: string, content: string, times?: WriteTimes): Promise<void>;
+	modify(path: string, content: string, times?: WriteTimes): Promise<void>;
 	rename(from: string, to: string): Promise<void>;
 	trash(path: string): Promise<void>;
 	ensureFolder(path: string): Promise<void>;
@@ -573,6 +579,8 @@ export class SyncEngine {
 		const hash = hashText(normaliseForHash(content));
 		const target = this.targetPath(detail, folder);
 		const syncedAt = this.now();
+		const recordedAt = detail.timestamp ? Date.parse(detail.timestamp) : NaN;
+		const times: WriteTimes = Number.isFinite(recordedAt) ? { ctime: recordedAt, mtime: recordedAt } : {};
 
 		if (!tracked && (await this.deps.io.exists(target))) {
 			// Another device's plugin may already have written this note here.
@@ -606,19 +614,25 @@ export class SyncEngine {
 				return "kept-edit";
 			}
 			if (hash === tracked.hash) {
+				if (!tracked.stamped && times.mtime) {
+					// Written by an older version: give the file the recording's time once.
+					await this.deps.io.modify(tracked.path, content, times);
+					tracked.stamped = true;
+				}
 				await this.deps.save();
 				return "unchanged";
 			}
-			await this.deps.io.modify(tracked.path, content);
+			await this.deps.io.modify(tracked.path, content, times);
 			tracked.hash = hash;
 			tracked.syncedAt = syncedAt;
+			tracked.stamped = true;
 			await this.deps.save();
 			return "updated";
 		}
 
 		const dest = await this.uniquePath(target, id, detail.timestamp);
 		await this.deps.io.ensureFolder(parentOf(dest));
-		await this.deps.io.create(dest, content);
+		await this.deps.io.create(dest, content, times);
 		this.state.notes[id] = {
 			path: dest,
 			managedPath: dest,
@@ -627,6 +641,7 @@ export class SyncEngine {
 			timestamp: detail.timestamp,
 			durationSeconds: detail.duration_seconds,
 			syncedAt,
+			stamped: true,
 		};
 		await this.deps.save();
 		return "created";

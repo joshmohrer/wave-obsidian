@@ -55,6 +55,7 @@ Prefer not to use the browser flow? Create an API token at [app.wave.co → Sett
 - **One way only.** The plugin reads from Wave. Nothing in your vault is sent back.
 - **Your history, your choice.** Sync everything, or only the last 30, 90 or 365 days. Big libraries sync in the background at Wave's API rate; the status bar shows progress.
 - Changed the content options (transcript, action items, notes)? Press **Rebuild notes** to apply them to existing notes. Edited notes still stay as they are.
+- **Newest first.** Every note's created and modified time is the recording's time, so sort the file explorer by *Modified time (new to old)* and your latest recording sits at the top. (Notes written by versions before 1.0.8 pick this up on their next full read; press **Rebuild notes** to do them all at once.)
 - Missing something? **Rebuild notes** also brings back notes you removed, and **Copy diagnostics** (Settings → Wave AI, or the command palette) copies a short, token-free report you can send to support@wave.co.
 
 ## Settings

@@ -10,6 +10,7 @@ class MemoryVault implements VaultIO {
 	files = new Map<string, string>();
 	folders = new Set<string>();
 	trashed: string[] = [];
+	times = new Map<string, { ctime?: number; mtime?: number }>();
 	async exists(path: string) {
 		return this.files.has(path) || this.folders.has(path);
 	}
@@ -18,13 +19,15 @@ class MemoryVault implements VaultIO {
 		if (v === undefined) throw new Error(`missing ${path}`);
 		return v;
 	}
-	async create(path: string, content: string) {
+	async create(path: string, content: string, times?: { ctime?: number; mtime?: number }) {
 		if (this.files.has(path)) throw new Error(`exists ${path}`);
 		this.files.set(path, content);
+		if (times) this.times.set(path, times);
 	}
-	async modify(path: string, content: string) {
+	async modify(path: string, content: string, times?: { ctime?: number; mtime?: number }) {
 		if (!this.files.has(path)) throw new Error(`missing ${path}`);
 		this.files.set(path, content);
+		if (times) this.times.set(path, times);
 	}
 	async rename(from: string, to: string) {
 		const v = this.files.get(from);
@@ -472,4 +475,27 @@ test("history range also keeps old recordings off the newest page after the firs
 	h.wave.sessions.push(makeSession(3, { timestamp: "2026-10-27T00:00:00.000Z" }));
 	const next = await h.engine.run("interval");
 	assert.equal(next?.created, 1);
+});
+
+test("notes carry the recording time as their file created and modified time", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	const recorded = Date.parse(h.wave.sessions[1].timestamp ?? "");
+	assert.deepEqual(h.vault.times.get(path), { ctime: recorded, mtime: recorded });
+	assert.equal(h.state.notes.s2?.stamped, true);
+});
+
+test("a note written by an older version gets the recording time on its next full read", async () => {
+	const h = harness();
+	await h.engine.run("manual");
+	const path = "Wave/2026-10-03 Session 2.md";
+	h.vault.times.delete(path);
+	delete h.state.notes.s2?.stamped;
+	h.engine.scheduleRebuild();
+	const result = await h.engine.run("rebuild");
+	assert.equal(result?.unchanged, 3);
+	const recorded = Date.parse(h.wave.sessions[1].timestamp ?? "");
+	assert.deepEqual(h.vault.times.get(path), { ctime: recorded, mtime: recorded });
+	assert.equal(h.state.notes.s2?.stamped, true);
 });

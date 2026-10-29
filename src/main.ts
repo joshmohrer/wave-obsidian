@@ -28,7 +28,7 @@ import {
 	type SyncState,
 	type WaveSettings,
 } from "./settings";
-import { SyncEngine, type SyncProgress, type SyncReason, type VaultIO } from "./sync";
+import { SyncEngine, type SyncProgress, type SyncReason, type VaultIO, type WriteTimes } from "./sync";
 
 const ICON_ID = "wave-ai";
 const ICON_SVG =
@@ -88,14 +88,14 @@ class ObsidianVaultIO implements VaultIO {
 		return this.app.vault.read(file);
 	}
 
-	async create(path: string, content: string): Promise<void> {
-		await this.app.vault.create(normalizePath(path), content);
+	async create(path: string, content: string, times?: WriteTimes): Promise<void> {
+		await this.app.vault.create(normalizePath(path), content, times);
 	}
 
-	async modify(path: string, content: string): Promise<void> {
+	async modify(path: string, content: string, times?: WriteTimes): Promise<void> {
 		const file = this.file(path);
 		if (!file) throw new Error(`Not a file: ${path}`);
-		await this.app.vault.modify(file, content);
+		await this.app.vault.modify(file, content, times);
 	}
 
 	async rename(from: string, to: string): Promise<void> {
@@ -539,7 +539,7 @@ class WaveSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "File names",
-						desc: "How each note is named.",
+						desc: "How each note is named. Every note's created and modified time is the recording's time, so sorting the file explorer by modified time (new to old) shows your newest recording first.",
 						control: { type: "dropdown", key: "fileNameStyle", options: { title: "Title only", "date-title": "2026-10-28 Title" } },
 					},
 				],

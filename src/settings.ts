@@ -49,6 +49,8 @@ export interface NoteRecord {
 	timestamp: string | null;
 	durationSeconds: number;
 	syncedAt: number;
+	/** File ctime/mtime carry the recording time (added in 1.0.8; older notes get it on their next full read). */
+	stamped?: boolean;
 }
 
 export interface SyncState {
