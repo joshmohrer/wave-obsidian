@@ -1,6 +1,6 @@
 {
 	"name": "wave-ai-obsidian",
-	"version": "1.0.8",
+	"version": "1.0.9",
 	"description": "Wave AI plugin for Obsidian: sync your recordings into your vault as Markdown.",
 	"main": "main.js",
 	"private": true,
