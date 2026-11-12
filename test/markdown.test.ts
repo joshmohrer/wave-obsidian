@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildNote, hashText, noteBaseName, pickFolder, sanitizeName, toObsidianTag } from "../src/markdown";
+import { buildNote, effectiveParentId, folderLabel, folderPath, hashText, noteBaseName, pickFolder, sanitizeName, toObsidianTag } from "../src/markdown";
 import type { SessionDetail, WaveFolder } from "../src/types";
 
 const session: SessionDetail = {
@@ -64,6 +64,50 @@ test("pickFolder prefers pinned, then manual order, then name", () => {
 	assert.equal(pickFolder(["b", "missing"], folders)?.name, "Alpha");
 	assert.equal(pickFolder(["missing"], folders), null);
 	assert.equal(pickFolder(undefined, folders), null);
+});
+
+test("pickFolder prefers the sub-folder when a recording is in a folder and its sub-folder", () => {
+	const folders = new Map<string, WaveFolder>([
+		["c", { id: "c", name: "Clients", pinned: true, parent_id: null }],
+		["a", { id: "a", name: "Acme", parent_id: "c" }],
+		["z", { id: "z", name: "Aardvark" }],
+	]);
+	assert.equal(pickFolder(["c", "a"], folders)?.id, "a");
+	assert.equal(pickFolder(["a", "c"], folders)?.id, "a");
+	// The parent drops out; the rest follow the usual order (name here).
+	assert.equal(pickFolder(["c", "a", "z"], folders)?.id, "z");
+	assert.equal(pickFolder(["c", "z"], folders)?.id, "c");
+});
+
+test("folderPath uses the API path, else parent_id with the resolver rule, else the name", () => {
+	const folders = new Map<string, WaveFolder>([
+		["c", { id: "c", name: "Clients" }],
+		["a", { id: "a", name: "Acme", parent_id: "c" }],
+		["p", { id: "p", name: "Pathed", path: ["Clients", "Pathed"] }],
+		["o", { id: "o", name: "Orphan", parent_id: "missing" }],
+		["s", { id: "s", name: "Self", parent_id: "s" }],
+		["x", { id: "x", name: "Deep", parent_id: "a" }],
+		["y1", { id: "y1", name: "Cycle1", parent_id: "y2" }],
+		["y2", { id: "y2", name: "Cycle2", parent_id: "y1" }],
+		["e", { id: "e", name: "Empty", parent_id: "" }],
+	]);
+	const path = (id: string) => folderPath(folders.get(id)!, folders);
+	assert.deepEqual(path("c"), ["Clients"]);
+	assert.deepEqual(path("a"), ["Clients", "Acme"]);
+	assert.deepEqual(path("p"), ["Clients", "Pathed"]);
+	assert.deepEqual(path("o"), ["Orphan"]);
+	assert.deepEqual(path("s"), ["Self"]);
+	assert.deepEqual(path("x"), ["Deep"]);
+	assert.deepEqual(path("y1"), ["Cycle1"]);
+	assert.deepEqual(path("e"), ["Empty"]);
+	assert.equal(effectiveParentId(folders.get("a")!, folders), "c");
+	assert.equal(folderLabel(folders.get("a")!, folders), "Clients/Acme");
+	assert.equal(folderLabel(folders.get("c")!, folders), "Clients");
+});
+
+test("buildNote writes the sub-folder path as the folder property", () => {
+	const note = buildNote({ session, folderName: "Clients/Acme", settings, transcript: null });
+	assert.match(note, /\nfolder: "Clients\/Acme"\n/);
 });
 
 test("buildNote writes properties, summary, action items, notes and a folded transcript", () => {

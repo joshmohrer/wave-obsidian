@@ -1,5 +1,5 @@
 import { WaveApiError, WaveClient } from "./api";
-import { buildNote, hashText, localDate, normaliseForHash, noteBaseName, pickFolder, sanitizeName } from "./markdown";
+import { buildNote, folderLabel, folderPath, hashText, localDate, normaliseForHash, noteBaseName, pickFolder, sanitizeName } from "./markdown";
 import type { NoteRecord, SyncState, WaveSettings } from "./settings";
 import type { BulkSession, SessionDetail, SessionListItem, Transcript, WaveFolder } from "./types";
 
@@ -580,7 +580,7 @@ export class SyncEngine {
 		const content = buildNote({
 			session: detail,
 			transcript,
-			folderName: folder?.name ?? null,
+			folderName: folder ? folderLabel(folder, this.folderCache) : null,
 			settings: this.settings,
 		});
 		const hash = hashText(normaliseForHash(content));
@@ -661,10 +661,11 @@ export class SyncEngine {
 		return "created";
 	}
 
+	/** Wave/<folder>/<note>.md, or Wave/<parent>/<sub-folder>/<note>.md for a Wave sub-folder. */
 	private targetPath(session: SessionDetail, folder: WaveFolder | null): string {
 		const base = this.settings.baseFolder?.trim() || "Wave";
-		const sub = folder ? sanitizeName(folder.name, "Folder") : "";
-		return joinPath(base, sub, `${noteBaseName(session, this.settings.fileNameStyle)}.md`);
+		const segments = folder ? folderPath(folder, this.folderCache).map((name) => sanitizeName(name, "Folder")) : [];
+		return joinPath(base, ...segments, `${noteBaseName(session, this.settings.fileNameStyle)}.md`);
 	}
 
 	/**

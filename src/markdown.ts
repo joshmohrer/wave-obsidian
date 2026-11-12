@@ -65,11 +65,47 @@ export function noteBaseName(session: { title: string; timestamp: string | null 
 	return `${date} ${title}`;
 }
 
-/** The Wave folder a session should live under: pinned first, then manual order, then name. */
+function rawParentId(folder: WaveFolder): string | null {
+	return typeof folder.parent_id === "string" && folder.parent_id !== "" ? folder.parent_id : null;
+}
+
+/**
+ * The folder a sub-folder sits in. A parent counts only if it exists, is not the folder itself and is
+ * itself top-level (one level deep); anything else is treated as a top-level folder.
+ */
+export function effectiveParentId(folder: WaveFolder, folders: Map<string, WaveFolder>): string | null {
+	const parentId = rawParentId(folder);
+	if (!parentId || parentId === folder.id) return null;
+	const parent = folders.get(parentId);
+	if (!parent || rawParentId(parent) !== null) return null;
+	return parentId;
+}
+
+/** Folder names from the top level down: ["Clients", "Acme"] for a sub-folder, ["Clients"] otherwise. */
+export function folderPath(folder: WaveFolder, folders: Map<string, WaveFolder>): string[] {
+	const path = folder.path;
+	if (Array.isArray(path) && path.length && path.every((p) => typeof p === "string" && p.length)) return path;
+	const parentId = effectiveParentId(folder, folders);
+	const parent = parentId ? folders.get(parentId) : undefined;
+	return parent ? [parent.name, folder.name] : [folder.name];
+}
+
+/** The `folder:` property: the plain name for a top-level folder, "Clients/Acme" for a sub-folder. */
+export function folderLabel(folder: WaveFolder, folders: Map<string, WaveFolder>): string {
+	const path = folderPath(folder, folders);
+	return path.length > 1 ? path.join("/") : folder.name;
+}
+
+/**
+ * The Wave folder a session should live under: pinned first, then manual order, then name. When the
+ * recording is in both a folder and one of its sub-folders, the sub-folder (more specific) wins.
+ */
 export function pickFolder(folderIds: string[] | undefined, folders: Map<string, WaveFolder>): WaveFolder | null {
 	if (!folderIds?.length) return null;
-	const candidates = folderIds.map((id) => folders.get(id)).filter((f): f is WaveFolder => Boolean(f));
-	if (!candidates.length) return null;
+	const all = folderIds.map((id) => folders.get(id)).filter((f): f is WaveFolder => Boolean(f));
+	if (!all.length) return null;
+	const parentsOfCandidates = new Set(all.map((f) => effectiveParentId(f, folders)).filter((id): id is string => Boolean(id)));
+	const candidates = all.filter((f) => !parentsOfCandidates.has(f.id));
 	candidates.sort((a, b) => {
 		if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
 		const ao = a.order ?? Number.MAX_SAFE_INTEGER;

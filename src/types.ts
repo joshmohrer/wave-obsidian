@@ -57,6 +57,10 @@ export interface WaveFolder {
 	name: string;
 	pinned?: boolean;
 	order?: number;
+	/** Parent folder id for a sub-folder (one level deep); null or absent at the top level. */
+	parent_id?: string | null;
+	/** Folder names from the top level down, e.g. ["Clients", "Acme"]. */
+	path?: string[];
 }
 
 export interface SessionListResponse {

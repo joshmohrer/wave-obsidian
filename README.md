@@ -38,7 +38,8 @@ Three Q4 bets: offline mode, the sharing redesign, and the admin audit log…
 - **Properties on top**: title, date, length, type, platform, language, Wave folder, tags, and a link back to the recording in Wave.
 - **Action items** as a task list (with `📅` due dates the Tasks plugin understands).
 - **Transcript** folded up under the note, speaker by speaker. Expand it, or turn it off.
-- **Folders**: a recording filed under "Customer Calls" in Wave lands in `Wave/Customer Calls/`.
+- **Folders**: a recording filed under "Customer Calls" in Wave lands in `Wave/Customer Calls/`. Sub-folders nest the same way: a recording in "Acme" inside "Clients" lands in `Wave/Clients/Acme/`, with `folder: "Clients/Acme"` in its properties. A recording in both a folder and one of its sub-folders goes to the sub-folder.
+- **Notes follow your folders**: when you move a recording, or move or rename a folder in Wave, its notes move to match the next time they're read in full (your newest recordings within the hour; or press **Rebuild notes** to move them all now, which also brings back notes you removed). Notes you've moved yourself stay where you put them, and a regular sync never brings back a note you deleted.
 
 ## Setting it up
 
@@ -63,7 +64,7 @@ Prefer not to use the browser flow? Create an API token at [app.wave.co → Sett
 | Setting | Default | What it does |
 |---|---|---|
 | Folder | `Wave` | Vault folder that holds your Wave notes |
-| Mirror Wave folders | on | Subfolders named after your Wave folders |
+| Mirror Wave folders | on | Subfolders named after your Wave folders and sub-folders |
 | File names | Title | Or `2026-10-28 Title`. Two recordings with the same title get the date added |
 | Transcript | folded | Folded, expanded, or left out |
 | Action items / Your notes | on | Include them in the note |

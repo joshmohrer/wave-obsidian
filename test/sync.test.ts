@@ -286,6 +286,90 @@ test("Wave folders become subfolders and follow the recording", async () => {
 	assert.ok(!h.vault.files.has("Wave/Product Design/2026-10-02 Session 1.md"));
 });
 
+test("Wave sub-folders become nested vault folders with the path in the folder property", async () => {
+	const h = harness({
+		folders: [
+			{ id: "f-clients", name: "Clients", parent_id: null, path: ["Clients"] },
+			{ id: "f-acme", name: "Acme: East", parent_id: "f-clients", path: ["Clients", "Acme: East"] },
+			{ id: "f-ops", name: "Ops", parent_id: "f-clients" }, // no path: derived from parent_id
+		],
+		sessions: [
+			makeSession(1, { folder_ids: ["f-clients", "f-acme"] }),
+			makeSession(2, { folder_ids: ["f-ops"] }),
+			makeSession(3, { folder_ids: ["f-clients"] }),
+		],
+	});
+	await h.engine.run("manual");
+	assert.ok(h.vault.files.has("Wave/Clients/Acme∶ East/2026-10-02 Session 1.md"));
+	assert.ok(h.vault.files.has("Wave/Clients/Ops/2026-10-03 Session 2.md"));
+	assert.ok(h.vault.files.has("Wave/Clients/2026-10-04 Session 3.md"));
+	assert.match(h.vault.files.get("Wave/Clients/Acme∶ East/2026-10-02 Session 1.md") ?? "", /\nfolder: "Clients\/Acme: East"\n/);
+	assert.match(h.vault.files.get("Wave/Clients/2026-10-04 Session 3.md") ?? "", /\nfolder: "Clients"\n/);
+	assert.ok(h.vault.folders.has("Wave/Clients/Ops"));
+});
+
+test("notes follow when a Wave folder is nested, renamed or moved back to the top level", async () => {
+	const h = harness({
+		folders: [{ id: "f-clients", name: "Clients" }, { id: "f-acme", name: "Acme" }],
+		sessions: [makeSession(1, { folder_ids: ["f-acme"] }), makeSession(2, { folder_ids: ["f-acme"] }), makeSession(3, { folder_ids: ["f-acme"] })],
+	});
+	await h.engine.run("manual");
+	assert.ok(h.vault.files.has("Wave/Acme/2026-10-02 Session 1.md"));
+	// The user moves one note and deletes another; neither may be touched again.
+	await h.vault.rename("Wave/Acme/2026-10-03 Session 2.md", "Mine/Session 2.md");
+	h.engine.noteRenamed("Wave/Acme/2026-10-03 Session 2.md", "Mine/Session 2.md", false);
+	h.vault.files.delete("Wave/Acme/2026-10-04 Session 3.md");
+	h.engine.noteDeleted("Wave/Acme/2026-10-04 Session 3.md", false);
+
+	// Nest Acme under Clients in Wave; the next full read moves the note.
+	h.wave.folders = [{ id: "f-clients", name: "Clients", parent_id: null, path: ["Clients"] }, { id: "f-acme", name: "Acme", parent_id: "f-clients", path: ["Clients", "Acme"] }];
+	h.state.lastDeepRefreshAt = 0;
+	await h.engine.run("interval");
+	const nested = "Wave/Clients/Acme/2026-10-02 Session 1.md";
+	assert.ok(h.vault.files.has(nested));
+	assert.ok(!h.vault.files.has("Wave/Acme/2026-10-02 Session 1.md"));
+	assert.equal(h.state.notes.s1.path, nested);
+	assert.match(h.vault.files.get(nested) ?? "", /\nfolder: "Clients\/Acme"\n/);
+	assert.ok(h.vault.files.has("Mine/Session 2.md"));
+	assert.equal(h.state.notes.s2.path, "Mine/Session 2.md");
+	assert.ok(![...h.vault.files.keys()].some((p) => p.includes("Session 2") && p.startsWith("Wave/")));
+	assert.ok(![...h.vault.files.keys()].some((p) => p.includes("Session 3")));
+
+	// Rename the parent, then move Acme back to the top level.
+	h.wave.folders = [{ id: "f-clients", name: "Customers", parent_id: null }, { id: "f-acme", name: "Acme", parent_id: "f-clients" }];
+	h.state.lastDeepRefreshAt = 0;
+	await h.engine.run("interval");
+	assert.ok(h.vault.files.has("Wave/Customers/Acme/2026-10-02 Session 1.md"));
+	h.wave.folders = [{ id: "f-clients", name: "Customers", parent_id: null }, { id: "f-acme", name: "Acme", parent_id: null }];
+	h.state.lastDeepRefreshAt = 0;
+	await h.engine.run("interval");
+	assert.ok(h.vault.files.has("Wave/Acme/2026-10-02 Session 1.md"));
+	assert.equal([...h.vault.files.keys()].filter((p) => p.includes("Session 1")).length, 1);
+	assert.match(h.vault.files.get("Wave/Acme/2026-10-02 Session 1.md") ?? "", /\nfolder: "Acme"\n/);
+});
+
+test("a nested note that collides with an existing file gets a unique name", async () => {
+	const h = harness({
+		folders: [{ id: "f-c", name: "Clients" }, { id: "f-a", name: "Acme", parent_id: "f-c" }],
+		sessions: [makeSession(1, { folder_ids: ["f-a"] })],
+	});
+	h.vault.files.set("Wave/Clients/Acme/2026-10-02 Session 1.md", "someone else's note");
+	await h.engine.run("manual");
+	assert.equal(h.vault.files.get("Wave/Clients/Acme/2026-10-02 Session 1.md"), "someone else's note");
+	assert.ok([...h.vault.files.keys()].some((p) => p.startsWith("Wave/Clients/Acme/2026-10-02 Session 1 (") && p.endsWith(".md")));
+});
+
+test("without parent_id or path, folders mirror exactly as before", async () => {
+	const h = harness({
+		folders: [{ id: "f-c", name: "Clients" }, { id: "f-a", name: "Acme" }],
+		sessions: [makeSession(1, { folder_ids: ["f-c", "f-a"] })],
+	});
+	await h.engine.run("manual");
+	// Neither is a sub-folder, so the usual pick (name order) applies and the path is one level.
+	assert.ok(h.vault.files.has("Wave/Acme/2026-10-02 Session 1.md"));
+	assert.match(h.vault.files.get("Wave/Acme/2026-10-02 Session 1.md") ?? "", /\nfolder: "Acme"\n/);
+});
+
 test("a recording deleted in Wave is confirmed before anything happens", async () => {
 	const h = harness({ settings: { onWaveDelete: "trash" } });
 	await h.engine.run("manual");
